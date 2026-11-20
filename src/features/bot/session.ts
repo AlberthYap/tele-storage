@@ -59,3 +59,48 @@ export function addSkippedFileToSession(chatId: number, file: PendingFile): void
     session.skippedFiles.push(file);
   }
 }
+
+// ─── Browse session ───────────────────────────────────────────────────────────
+
+export enum BrowseStep {
+  AwaitingCategory = "browse_category",
+  AwaitingTags = "browse_tags",
+  AwaitingEventDate = "browse_event_date",
+  Browsing = "browsing",
+}
+
+export type BrowseFile = {
+  id: string;
+  fileName: string;
+  fileType: string;
+  fileId: string;
+  eventDate: string | null;
+  isFavorite: boolean;
+};
+
+export type BrowseSession = {
+  step: BrowseStep;
+  userId: number;
+  threadId: number | null;
+  categoryId: string | null;
+  categoryName: string | null;
+  tagIds: string[];
+  eventDate: string | null;
+  results: BrowseFile[];
+  currentIndex: number;
+  browseMessageId: number | null;
+};
+
+const browseSessions = new Map<number, BrowseSession>();
+
+export function getBrowseSession(chatId: number): BrowseSession | undefined {
+  return browseSessions.get(chatId);
+}
+
+export function setBrowseSession(chatId: number, session: BrowseSession): void {
+  browseSessions.set(chatId, session);
+}
+
+export function clearBrowseSession(chatId: number): void {
+  browseSessions.delete(chatId);
+}

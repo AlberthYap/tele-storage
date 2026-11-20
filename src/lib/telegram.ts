@@ -85,3 +85,54 @@ export async function copyMessage(
     message_id: messageId,
   });
 }
+
+export async function sendFileMessage(
+  chatId: number,
+  fileType: string,
+  fileId: string,
+  caption: string,
+  opts?: Omit<MsgOpts, "parse_mode">,
+): Promise<{ message_id: number }> {
+  const methodMap: Record<string, string> = {
+    photo: "sendPhoto",
+    video: "sendVideo",
+    audio: "sendAudio",
+  };
+  const fieldMap: Record<string, string> = {
+    photo: "photo",
+    video: "video",
+    audio: "audio",
+  };
+  const method = methodMap[fileType] ?? "sendDocument";
+  const field = fieldMap[fileType] ?? "document";
+  return call(method, { chat_id: chatId, [field]: fileId, caption, ...opts });
+}
+
+export async function editMessageMedia(
+  chatId: number,
+  messageId: number,
+  fileType: string,
+  fileId: string,
+  caption: string,
+  replyMarkup?: unknown,
+): Promise<void> {
+  const type = ["photo", "video", "audio"].includes(fileType) ? fileType : "document";
+  try {
+    await call("editMessageMedia", {
+      chat_id: chatId,
+      message_id: messageId,
+      media: { type, media: fileId, caption },
+      reply_markup: replyMarkup,
+    });
+  } catch {
+    // message may have been deleted — safe to ignore
+  }
+}
+
+export async function deleteMessage(chatId: number, messageId: number): Promise<void> {
+  try {
+    await call("deleteMessage", { chat_id: chatId, message_id: messageId });
+  } catch {
+    // message may already be deleted — safe to ignore
+  }
+}

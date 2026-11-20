@@ -13,6 +13,18 @@ export const CB = {
   TAG_PREFIX: "tag:",
   DATE_PREFIX: "date:",
   CONFIRM_PREFIX: "confirm:",
+  FAV_PREFIX: "fav:",
+  // Browse flow (separate prefixes to avoid conflict with upload flow)
+  BCAT_PREFIX: "bcat:",
+  BTAG_PREFIX: "btag:",
+  BTAG_SKIP: "btag:skip",
+  BTAG_DONE: "btag:done",
+  BDATE_SKIP: "bdate:skip",
+  BDATE_PICK: "bdate:pick",
+  BROWSE_PREV: "browse:prev",
+  BROWSE_NEXT: "browse:next",
+  BROWSE_FAV: "browse:fav",
+  BROWSE_CLOSE: "browse:close",
 } as const;
 
 export function categoryKeyboard(categories: { id: string; name: string }[]): {
@@ -44,6 +56,59 @@ export function eventDateKeyboard(): { inline_keyboard: InlineButton[][] } {
       [{ text: "📅 Pilih tanggal", callback_data: CB.DATE_PICK }],
       [{ text: "⏭ Lewati", callback_data: CB.DATE_SKIP }],
     ],
+  };
+}
+
+export function browseCategoryKeyboard(categories: { id: string; name: string }[]): {
+  inline_keyboard: InlineButton[][];
+} {
+  const buttons = categories.map((c) => [{ text: c.name, callback_data: `${CB.BCAT_PREFIX}${c.id}` }]);
+  return { inline_keyboard: buttons };
+}
+
+export function browseTagsKeyboard(
+  allTags: { id: string; name: string }[],
+  selectedIds: string[],
+): { inline_keyboard: InlineButton[][] } {
+  const buttons = allTags.map((t) => {
+    const selected = selectedIds.includes(t.id);
+    return [{ text: `${selected ? "✅" : "☐"} #${t.name}`, callback_data: `${CB.BTAG_PREFIX}${t.id}` }];
+  });
+  buttons.push([
+    { text: "✅ Konfirmasi", callback_data: CB.BTAG_DONE },
+    { text: "⏭ Lewati", callback_data: CB.BTAG_SKIP },
+  ]);
+  return { inline_keyboard: buttons };
+}
+
+export function browseNavKeyboard(
+  index: number,
+  total: number,
+  isFavorite: boolean,
+): { inline_keyboard: InlineButton[][] } {
+  return {
+    inline_keyboard: [
+      [
+        { text: index > 0 ? "◀" : "·", callback_data: index > 0 ? CB.BROWSE_PREV : "noop" },
+        { text: `${index + 1} / ${total}`, callback_data: "noop" },
+        { text: index < total - 1 ? "▶" : "·", callback_data: index < total - 1 ? CB.BROWSE_NEXT : "noop" },
+      ],
+      [{ text: isFavorite ? "★ Hapus Favorit" : "☆ Jadikan Favorit", callback_data: CB.BROWSE_FAV }],
+      [{ text: "✕ Tutup", callback_data: CB.BROWSE_CLOSE }],
+    ],
+  };
+}
+
+export function favoriteKeyboard(
+  files: { id: string; fileName: string; isFavorite: boolean }[],
+): { inline_keyboard: InlineButton[][] } {
+  return {
+    inline_keyboard: files.map((f) => [
+      {
+        text: `${f.isFavorite ? "★" : "☆"} ${f.fileName}`,
+        callback_data: `${CB.FAV_PREFIX}${f.id}`,
+      },
+    ]),
   };
 }
 

@@ -1,10 +1,10 @@
+import "dotenv/config";
 import { Elysia } from "elysia";
+import { botWebhook } from "./features/bot";
 
 const app = new Elysia()
-.get("/", () => "Hello Elysia")
-.get("/healthz", () => ({ok: true, ts:Date.now()}))
-.listen(3000);
+  .use(botWebhook)
+  .get("/healthz", () => ({ ok: true, ts: Date.now() }))
+  .listen(Number(process.env.PORT ?? 3000));
 
-console.log(
-  `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`
-);
+console.log(`ready on http://localhost:${app.server?.port}`);

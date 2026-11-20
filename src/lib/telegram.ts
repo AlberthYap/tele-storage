@@ -136,3 +136,9 @@ export async function deleteMessage(chatId: number, messageId: number): Promise<
     // message may already be deleted — safe to ignore
   }
 }
+
+export async function setMyCommands(
+  commands: { command: string; description: string }[],
+): Promise<void> {
+  await call("setMyCommands", { commands });
+}

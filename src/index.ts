@@ -1,6 +1,13 @@
 import "dotenv/config";
 import { Elysia } from "elysia";
 import { botWebhook } from "./features/bot";
+import { setMyCommands } from "./lib/telegram";
+
+const BOT_COMMANDS = [
+  { command: "help", description: "Lihat semua perintah" },
+  { command: "newcategory", description: "Buat kategori baru: /newcategory Nama Kategori" },
+  { command: "setfavorite", description: "Cari & tandai file sebagai favorit" },
+];
 
 const app = new Elysia()
   .use(botWebhook)
@@ -8,3 +15,7 @@ const app = new Elysia()
   .listen(Number(process.env.PORT ?? 3000));
 
 console.log(`ready on http://localhost:${app.server?.port}`);
+
+setMyCommands(BOT_COMMANDS).catch((err) =>
+  console.error("setMyCommands failed:", err),
+);

@@ -431,18 +431,22 @@ export async function handleText(chatId: number, userId: number, text: string) {
 
   if (session?.step === UploadStep.AwaitingCategory) {
     const result = await createCategory(session.userId, text);
-    if (result.ok) {
-      session.categoryId = result.value.id;
-      session.categoryName = text;
-      session.step = UploadStep.AwaitingTags;
-      const userTags = await listTags(session.userId);
-      const kbMsg = await sendMessage(chatId, `✅ Kategori "${text}" dibuat.\n\n🏷 Pilih tag:`, {
-        reply_markup: tagsKeyboard(userTags, []),
-        ...tOpts,
-      });
-      session.keyboardMessageId = kbMsg.message_id;
-      setSession(chatId, session);
+    if (!result.ok) {
+      await sendMessage(chatId, `❌ ${result.error.message}`, tOpts);
+      return;
     }
+    // Best-effort: create forum topic in storage group, errors are logged but don't block upload.
+    await tryCreateForumTopic(result.value.id, text);
+    session.categoryId = result.value.id;
+    session.categoryName = text;
+    session.step = UploadStep.AwaitingTags;
+    const userTags = await listTags(session.userId);
+    const kbMsg = await sendMessage(chatId, `✅ Kategori "${text}" dibuat.\n\n🏷 Pilih tag:`, {
+      reply_markup: tagsKeyboard(userTags, []),
+      ...tOpts,
+    });
+    session.keyboardMessageId = kbMsg.message_id;
+    setSession(chatId, session);
     return;
   }
 
@@ -508,8 +512,38 @@ export async function handleText(chatId: number, userId: number, text: string) {
   if (text === "/start" || text === "/help") {
     await sendMessage(
       chatId,
-      "👋 Selamat datang di Telegram File Vault!\n\nKirim file ke sini untuk menyimpannya.\n\n/newcategory <nama> — buat kategori baru (+ topic otomatis di group).\n/setfavorite — tandai file sebagai favorit.",
+      [
+        "📦 *Telegram File Vault*",
+        "",
+        "Kirim file (dokumen, foto, video, audio) untuk mulai menyimpan.",
+        "",
+        "*Perintah:*",
+        "/newcategory `Nama` — buat kategori baru (+ forum topic otomatis di group)",
+        "/setfavorite — cari file & tandai sebagai favorit",
+        "/help — tampilkan pesan ini",
+        "",
+        "*Tips:*",
+        "• Kirim beberapa file sekaligus sebelum pilih kategori untuk batch upload",
+        "• Di group, file yang dikirim ke topic tertentu otomatis masuk kategori yang sesuai",
+        "• Duplikat dilewati otomatis dan dilaporkan di akhir",
+      ].join("\n"),
+      { parse_mode: "Markdown", ...tOpts },
     );
+  }
+}
+
+// Creates a forum topic in the storage group and links it to the category.
+// Returns the threadId on success, null if STORAGE_CHAT_ID is not set or topic creation fails.
+async function tryCreateForumTopic(categoryId: string, name: string): Promise<number | null> {
+  const groupId = STORAGE_CHAT_ID();
+  if (!groupId) return null;
+  try {
+    const topic = await createForumTopic(groupId, name);
+    await updateCategoryThreadId(categoryId, topic.message_thread_id);
+    return topic.message_thread_id;
+  } catch (err) {
+    logger.error({ err }, "createForumTopic error");
+    return null;
   }
 }
 
@@ -532,25 +566,19 @@ async function handleNewCategory(
     return;
   }
 
-  const groupId = STORAGE_CHAT_ID();
-  if (!groupId) {
-    await sendMessage(chatId, `✅ Kategori "${name}" dibuat.`, tOpts);
-    return;
-  }
-
-  try {
-    const topic = await createForumTopic(groupId, name);
-    await updateCategoryThreadId(result.value.id, topic.message_thread_id);
-    await sendMessage(groupId, `✅ Kategori & topic "${name}" dibuat.`, {
-      message_thread_id: topic.message_thread_id,
+  const threadId = await tryCreateForumTopic(result.value.id, name);
+  if (threadId) {
+    await sendMessage(STORAGE_CHAT_ID(), `✅ Kategori & topic "${name}" dibuat.`, {
+      message_thread_id: threadId,
     });
-  } catch (err) {
-    logger.error({ err }, "createForumTopic error");
+  } else if (STORAGE_CHAT_ID()) {
     await sendMessage(
       chatId,
       `✅ Kategori "${name}" dibuat, tapi gagal buat topic (bot harus admin dengan Manage Topics).`,
       tOpts,
     );
+  } else {
+    await sendMessage(chatId, `✅ Kategori "${name}" dibuat.`, tOpts);
   }
 }
 

@@ -6,6 +6,7 @@ import { setMyCommands } from "./lib/telegram";
 const BOT_COMMANDS = [
   { command: "help", description: "Lihat semua perintah" },
   { command: "newcategory", description: "Buat kategori baru: /newcategory Nama Kategori" },
+  { command: "search", description: "Cari file berdasarkan kata kunci, kategori, tag, atau tanggal" },
   { command: "setfavorite", description: "Cari & tandai file sebagai favorit" },
 ];
 

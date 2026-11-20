@@ -10,4 +10,4 @@ export {
   getOrCreateTagByName,
   updateCategoryThreadId,
 } from "./service";
-export { getFileByUniqueId, toggleFavorite, searchFiles } from "./queries";
+export { getFileByUniqueId, toggleFavorite, searchFiles, getCategoryById } from "./queries";

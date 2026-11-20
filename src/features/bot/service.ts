@@ -11,6 +11,7 @@ import {
   getFileByUniqueId,
   toggleFavorite,
   searchFiles,
+  getCategoryById,
 } from "../files";
 import {
   getSession,
@@ -272,15 +273,17 @@ export async function handleCallbackQuery(
   userId: number,
   data: string,
   messageId: number,
+  threadId: number | null = null,
 ) {
   void messageId;
 
   // Browse flow uses its own session — must be routed before the upload session guard.
   if (data.startsWith(CB.FAV_PREFIX)) return handleFavoriteToggle(chatId, data);
-  if (data.startsWith(CB.BCAT_PREFIX)) return handleBrowseCategoryStep(chatId, data);
-  if (data.startsWith(CB.BTAG_PREFIX) || data === CB.BTAG_SKIP || data === CB.BTAG_DONE) return handleBrowseTagStep(chatId, data);
-  if (data === CB.BDATE_SKIP || data === CB.BDATE_PICK) return handleBrowseDateStep(chatId, data);
-  if (data.startsWith("browse:")) return handleBrowseNav(chatId, data);
+  if (data === CB.BQUERY_SKIP) return handleBrowseQuerySkip(chatId, threadId);
+  if (data.startsWith(CB.BCAT_PREFIX)) return handleBrowseCategoryStep(chatId, data, threadId);
+  if (data.startsWith(CB.BTAG_PREFIX) || data === CB.BTAG_SKIP || data === CB.BTAG_DONE) return handleBrowseTagStep(chatId, data, threadId);
+  if (data === CB.BDATE_SKIP || data === CB.BDATE_PICK) return handleBrowseDateStep(chatId, data, threadId);
+  if (data === CB.BROWSE_SELECT || data === CB.BROWSE_DOWNLOAD_SELECTED || data.startsWith("browse:")) return handleBrowseNav(chatId, data, threadId);
 
   // Upload flow — requires an active upload session.
   const session = getSession(chatId);
@@ -424,10 +427,12 @@ async function handleConfirmStep(
 
 // ─── handleText ───────────────────────────────────────────────────────────────
 
-export async function handleText(chatId: number, userId: number, text: string) {
+export async function handleText(chatId: number, userId: number, text: string, threadId: number | null = null) {
   const session = getSession(chatId);
   const browseSession = getBrowseSession(chatId);
-  const tOpts = session?.threadId ? { message_thread_id: session.threadId } : {};
+  // threadId from the message takes priority; fall back to active session's thread
+  const resolvedThreadId = threadId ?? session?.threadId ?? null;
+  const tOpts = resolvedThreadId ? { message_thread_id: resolvedThreadId } : {};
 
   if (session?.step === UploadStep.AwaitingCategory) {
     const result = await createCategory(session.userId, text);
@@ -486,6 +491,20 @@ export async function handleText(chatId: number, userId: number, text: string) {
     return;
   }
 
+  // Search flow: user typed the search query
+  if (browseSession?.step === BrowseStep.AwaitingQuery) {
+    const bOpts = browseSession.threadId ? { message_thread_id: browseSession.threadId } : {};
+    browseSession.q = text.trim();
+    browseSession.step = BrowseStep.AwaitingCategory;
+    setBrowseSession(chatId, browseSession);
+    const categories = await listCategories(browseSession.userId);
+    await sendMessage(chatId, "📁 Filter kategori (opsional):", {
+      reply_markup: browseCategoryKeyboard(categories, { showSkipAll: true }),
+      ...bOpts,
+    });
+    return;
+  }
+
   // Browse flow: user typed a date after clicking "📅 Pilih tanggal"
   if (browseSession?.step === BrowseStep.AwaitingEventDate) {
     const bOpts = browseSession.threadId ? { message_thread_id: browseSession.threadId } : {};
@@ -505,7 +524,12 @@ export async function handleText(chatId: number, userId: number, text: string) {
   }
 
   if (text === "/setfavorite") {
-    await startBrowseFlow(chatId, userId, session?.threadId ?? null);
+    await startBrowseFlow(chatId, userId, resolvedThreadId);
+    return;
+  }
+
+  if (text === "/search" || text.startsWith("/search ")) {
+    await startSearchFlow(chatId, userId, resolvedThreadId);
     return;
   }
 
@@ -519,6 +543,7 @@ export async function handleText(chatId: number, userId: number, text: string) {
         "",
         "*Perintah:*",
         "/newcategory `Nama` — buat kategori baru (+ forum topic otomatis di group)",
+        "/search — cari file berdasarkan kata kunci, kategori, tag, atau tanggal",
         "/setfavorite — cari file & tandai sebagai favorit",
         "/help — tampilkan pesan ini",
         "",
@@ -591,6 +616,10 @@ async function saveAll(chatId: number, session: UploadSession) {
   const savedFiles: SavedFileEntry[] = [];
   let failed = 0;
 
+  // Look up the category's forum topic threadId so files land in the right topic in storage group.
+  const category = await getCategoryById(session.categoryId);
+  const storageThreadId = category?.threadId ?? null;
+
   for (const file of session.files) {
     try {
       // If the file was sent directly to the storage group, reuse the original message reference.
@@ -604,6 +633,7 @@ async function saveAll(chatId: number, session: UploadSession) {
           storageChatId,
           Number(file.originalChatId),
           file.originalMessageId,
+          storageThreadId ?? undefined,
         );
         refChatId = String(storageChatId);
         refMessageId = copied.message_id;
@@ -699,43 +729,98 @@ async function startBrowseFlow(chatId: number, userId: number, threadId: number 
   });
   setBrowseSession(chatId, {
     step: BrowseStep.AwaitingCategory,
+    source: "setfavorite",
     userId: dbUserId,
     threadId,
+    q: null,
     categoryId: null,
     categoryName: null,
     tagIds: [],
     eventDate: null,
     results: [],
     currentIndex: 0,
+    selectedIds: [],
+    filterMessageId: null,
     browseMessageId: null,
   });
 }
 
-async function handleBrowseCategoryStep(chatId: number, data: string) {
+async function handleBrowseQuerySkip(chatId: number, cbThreadId: number | null = null) {
   const session = getBrowseSession(chatId);
-  if (!session || session.step !== BrowseStep.AwaitingCategory) return;
-  const tOpts = session.threadId ? { message_thread_id: session.threadId } : {};
-
-  const categoryId = data.slice(CB.BCAT_PREFIX.length);
-  const allCategories = await listCategories(session.userId);
-  const category = allCategories.find((c) => c.id === categoryId);
-
-  session.categoryId = categoryId;
-  session.categoryName = category?.name ?? categoryId;
-  session.step = BrowseStep.AwaitingTags;
+  if (!session || session.step !== BrowseStep.AwaitingQuery) return;
+  const tid = session.threadId ?? cbThreadId;
+  const tOpts = tid ? { message_thread_id: tid } : {};
+  session.q = null;
+  session.step = BrowseStep.AwaitingCategory;
   setBrowseSession(chatId, session);
-
-  const userTags = await listTags(session.userId);
-  await sendMessage(chatId, `📁 ${session.categoryName}\n\n🏷 Filter tag (opsional):`, {
-    reply_markup: browseTagsKeyboard(userTags, []),
+  const categories = await listCategories(session.userId);
+  await sendMessage(chatId, "📁 Filter kategori (opsional):", {
+    reply_markup: browseCategoryKeyboard(categories, { showSkipAll: true }),
     ...tOpts,
   });
 }
 
-async function handleBrowseTagStep(chatId: number, data: string) {
+async function startSearchFlow(chatId: number, userId: number, threadId: number | null) {
+  const tOpts = threadId ? { message_thread_id: threadId } : {};
+  const dbUserId = getDbUserId(chatId, userId, threadId !== null);
+  setBrowseSession(chatId, {
+    step: BrowseStep.AwaitingQuery,
+    source: "search",
+    userId: dbUserId,
+    threadId,
+    q: null,
+    categoryId: null,
+    categoryName: null,
+    tagIds: [],
+    eventDate: null,
+    results: [],
+    currentIndex: 0,
+    selectedIds: [],
+    filterMessageId: null,
+    browseMessageId: null,
+  });
+  await sendMessage(chatId, "🔍 Ketik kata kunci (opsional):", {
+    reply_markup: { inline_keyboard: [[{ text: "⏭ Lewati", callback_data: CB.BQUERY_SKIP }]] },
+    ...tOpts,
+  });
+}
+
+async function handleBrowseCategoryStep(chatId: number, data: string, cbThreadId: number | null = null) {
+  const session = getBrowseSession(chatId);
+  if (!session || session.step !== BrowseStep.AwaitingCategory) return;
+  const tid = session.threadId ?? cbThreadId;
+  const tOpts = tid ? { message_thread_id: tid } : {};
+
+  if (data === CB.BCAT_SKIP) {
+    // /search only: skip category filter, search across all categories
+    session.categoryId = null;
+    session.categoryName = null;
+  } else {
+    const categoryId = data.slice(CB.BCAT_PREFIX.length);
+    const allCategories = await listCategories(session.userId);
+    const category = allCategories.find((c) => c.id === categoryId);
+    session.categoryId = categoryId;
+    session.categoryName = category?.name ?? categoryId;
+  }
+
+  session.step = BrowseStep.AwaitingTags;
+  setBrowseSession(chatId, session);
+
+  const userTags = await listTags(session.userId);
+  const header = session.categoryName ? `📁 ${session.categoryName}\n\n` : "";
+  const tagMsg = await sendMessage(chatId, `${header}🏷 Filter tag (opsional):`, {
+    reply_markup: browseTagsKeyboard(userTags, []),
+    ...tOpts,
+  });
+  session.filterMessageId = tagMsg.message_id;
+  setBrowseSession(chatId, session);
+}
+
+async function handleBrowseTagStep(chatId: number, data: string, cbThreadId: number | null = null) {
   const session = getBrowseSession(chatId);
   if (!session || session.step !== BrowseStep.AwaitingTags) return;
-  const tOpts = session.threadId ? { message_thread_id: session.threadId } : {};
+  const tid = session.threadId ?? cbThreadId;
+  const tOpts = tid ? { message_thread_id: tid } : {};
 
   if (data === CB.BTAG_SKIP || data === CB.BTAG_DONE) {
     session.step = BrowseStep.AwaitingEventDate;
@@ -757,16 +842,23 @@ async function handleBrowseTagStep(chatId: number, data: string) {
   setBrowseSession(chatId, session);
 
   const userTags = await listTags(session.userId);
-  await sendMessage(chatId, `📁 ${session.categoryName}\n\n🏷 Filter tag (opsional):`, {
-    reply_markup: browseTagsKeyboard(userTags, session.tagIds),
-    ...tOpts,
-  });
+  const header = session.categoryName ? `📁 ${session.categoryName}\n\n` : "";
+  const text = `${header}🏷 Filter tag (opsional):`;
+  const keyboard = browseTagsKeyboard(userTags, session.tagIds);
+  if (session.filterMessageId) {
+    await editMessageText(chatId, session.filterMessageId, text, { reply_markup: keyboard });
+  } else {
+    const msg = await sendMessage(chatId, text, { reply_markup: keyboard, ...tOpts });
+    session.filterMessageId = msg.message_id;
+    setBrowseSession(chatId, session);
+  }
 }
 
-async function handleBrowseDateStep(chatId: number, data: string) {
+async function handleBrowseDateStep(chatId: number, data: string, cbThreadId: number | null = null) {
   const session = getBrowseSession(chatId);
   if (!session || session.step !== BrowseStep.AwaitingEventDate) return;
-  const tOpts = session.threadId ? { message_thread_id: session.threadId } : {};
+  const tid = session.threadId ?? cbThreadId;
+  const tOpts = tid ? { message_thread_id: tid } : {};
 
   if (data === CB.BDATE_PICK) {
     await sendMessage(chatId, "Ketik tanggal filter (YYYY-MM-DD):", tOpts);
@@ -782,11 +874,15 @@ async function showBrowseResults(
   session: BrowseSession,
   tOpts: Record<string, unknown>,
 ) {
-  if (!session.categoryId) return;
+  if (!session.categoryId && !session.q) {
+    await sendMessage(chatId, "⚠️ Masukkan kata kunci atau pilih kategori dulu.", tOpts);
+    return;
+  }
 
   const rows = await searchFiles({
     userId: session.userId,
-    categoryId: session.categoryId,
+    q: session.q ?? undefined,
+    categoryId: session.categoryId ?? undefined,
     tagIds: session.tagIds.length > 0 ? session.tagIds : undefined,
     eventDateFrom: session.eventDate ?? undefined,
     eventDateTo: session.eventDate ?? undefined,
@@ -816,7 +912,10 @@ async function showBrowseResults(
 
   const first = results[0]!;
   const caption = buildBrowseCaption(first, session.categoryName, 0, results.length);
-  const keyboard = browseNavKeyboard(0, results.length, first.isFavorite);
+  const navOpts = session.source === "search"
+    ? { mode: "search" as const, isSelected: false, selectedCount: 0 }
+    : { mode: "setfavorite" as const, isFavorite: first.isFavorite };
+  const keyboard = browseNavKeyboard(0, results.length, navOpts);
   const msg = await sendFileMessage(chatId, first.fileType, first.fileId, caption, {
     reply_markup: keyboard,
     ...tOpts,
@@ -825,10 +924,11 @@ async function showBrowseResults(
   setBrowseSession(chatId, session);
 }
 
-async function handleBrowseNav(chatId: number, data: string) {
+async function handleBrowseNav(chatId: number, data: string, cbThreadId: number | null = null) {
   const session = getBrowseSession(chatId);
   if (!session || session.step !== BrowseStep.Browsing || !session.browseMessageId) return;
-  const tOpts = session.threadId ? { message_thread_id: session.threadId } : {};
+  const tid = session.threadId ?? cbThreadId;
+  const tOpts = tid ? { message_thread_id: tid } : {};
 
   if (data === CB.BROWSE_CLOSE) {
     await deleteMessage(chatId, session.browseMessageId);
@@ -836,7 +936,7 @@ async function handleBrowseNav(chatId: number, data: string) {
     return;
   }
 
-  if (data === CB.BROWSE_FAV) {
+  if (data === CB.BROWSE_FAV && session.source === "setfavorite") {
     const file = session.results[session.currentIndex];
     if (!file) return;
     file.isFavorite = !file.isFavorite;
@@ -847,8 +947,40 @@ async function handleBrowseNav(chatId: number, data: string) {
       file.fileType,
       file.fileId,
       buildBrowseCaption(file, session.categoryName, session.currentIndex, session.results.length),
-      browseNavKeyboard(session.currentIndex, session.results.length, file.isFavorite),
+      browseNavKeyboard(session.currentIndex, session.results.length, { mode: "setfavorite", isFavorite: file.isFavorite }),
     );
+    setBrowseSession(chatId, session);
+    return;
+  }
+
+  if (data === CB.BROWSE_SELECT && session.source === "search") {
+    const file = session.results[session.currentIndex];
+    if (!file) return;
+    const idx = session.selectedIds.indexOf(file.id);
+    if (idx >= 0) session.selectedIds.splice(idx, 1);
+    else session.selectedIds.push(file.id);
+    setBrowseSession(chatId, session);
+    await editMessageMedia(
+      chatId,
+      session.browseMessageId,
+      file.fileType,
+      file.fileId,
+      buildBrowseCaption(file, session.categoryName, session.currentIndex, session.results.length),
+      browseNavKeyboard(session.currentIndex, session.results.length, {
+        mode: "search",
+        isSelected: session.selectedIds.includes(file.id),
+        selectedCount: session.selectedIds.length,
+      }),
+    );
+    return;
+  }
+
+  if (data === CB.BROWSE_DOWNLOAD_SELECTED && session.source === "search") {
+    const toSend = session.results.filter((f) => session.selectedIds.includes(f.id));
+    for (const file of toSend) {
+      await sendFileMessage(chatId, file.fileType, file.fileId, file.fileName, tOpts);
+    }
+    session.selectedIds = [];
     setBrowseSession(chatId, session);
     return;
   }
@@ -863,16 +995,19 @@ async function handleBrowseNav(chatId: number, data: string) {
 
   const file = session.results[newIndex]!;
   const caption = buildBrowseCaption(file, session.categoryName, newIndex, session.results.length);
+  const navOpts = session.source === "search"
+    ? { mode: "search" as const, isSelected: session.selectedIds.includes(file.id), selectedCount: session.selectedIds.length }
+    : { mode: "setfavorite" as const, isFavorite: file.isFavorite };
   await editMessageMedia(
     chatId,
     session.browseMessageId,
     file.fileType,
     file.fileId,
     caption,
-    browseNavKeyboard(newIndex, session.results.length, file.isFavorite),
+    browseNavKeyboard(newIndex, session.results.length, navOpts),
   );
 
-  void tOpts; // thread context is on the original message, not needed for edits
+  void tOpts;
 }
 
 function buildBrowseCaption(

@@ -16,6 +16,8 @@ export const CB = {
   FAV_PREFIX: "fav:",
   // Browse flow (separate prefixes to avoid conflict with upload flow)
   BCAT_PREFIX: "bcat:",
+  BCAT_SKIP: "bcat:skip",
+  BQUERY_SKIP: "bquery:skip",
   BTAG_PREFIX: "btag:",
   BTAG_SKIP: "btag:skip",
   BTAG_DONE: "btag:done",
@@ -24,6 +26,8 @@ export const CB = {
   BROWSE_PREV: "browse:prev",
   BROWSE_NEXT: "browse:next",
   BROWSE_FAV: "browse:fav",
+  BROWSE_SELECT: "browse:select",
+  BROWSE_DOWNLOAD_SELECTED: "browse:dl_selected",
   BROWSE_CLOSE: "browse:close",
 } as const;
 
@@ -59,10 +63,14 @@ export function eventDateKeyboard(): { inline_keyboard: InlineButton[][] } {
   };
 }
 
-export function browseCategoryKeyboard(categories: { id: string; name: string }[]): {
-  inline_keyboard: InlineButton[][];
-} {
+export function browseCategoryKeyboard(
+  categories: { id: string; name: string }[],
+  opts?: { showSkipAll?: boolean },
+): { inline_keyboard: InlineButton[][] } {
   const buttons = categories.map((c) => [{ text: c.name, callback_data: `${CB.BCAT_PREFIX}${c.id}` }]);
+  if (opts?.showSkipAll) {
+    buttons.push([{ text: "🔍 Semua kategori", callback_data: CB.BCAT_SKIP }]);
+  }
   return { inline_keyboard: buttons };
 }
 
@@ -84,8 +92,32 @@ export function browseTagsKeyboard(
 export function browseNavKeyboard(
   index: number,
   total: number,
-  isFavorite: boolean,
+  opts:
+    | { mode: "setfavorite"; isFavorite: boolean }
+    | { mode: "search"; isSelected: boolean; selectedCount: number },
 ): { inline_keyboard: InlineButton[][] } {
+  if (opts.mode === "setfavorite") {
+    return {
+      inline_keyboard: [
+        [
+          { text: index > 0 ? "◀" : "·", callback_data: index > 0 ? CB.BROWSE_PREV : "noop" },
+          { text: `${index + 1} / ${total}`, callback_data: "noop" },
+          { text: index < total - 1 ? "▶" : "·", callback_data: index < total - 1 ? CB.BROWSE_NEXT : "noop" },
+        ],
+        [{ text: opts.isFavorite ? "★ Hapus Favorit" : "☆ Jadikan Favorit", callback_data: CB.BROWSE_FAV }],
+        [{ text: "✕ Tutup", callback_data: CB.BROWSE_CLOSE }],
+      ],
+    };
+  }
+
+  // search mode: select + optional bulk download
+  const bottomRow: InlineButton[] = opts.selectedCount > 0
+    ? [
+        { text: `⬇ Download (${opts.selectedCount})`, callback_data: CB.BROWSE_DOWNLOAD_SELECTED },
+        { text: "✕ Tutup", callback_data: CB.BROWSE_CLOSE },
+      ]
+    : [{ text: "✕ Tutup", callback_data: CB.BROWSE_CLOSE }];
+
   return {
     inline_keyboard: [
       [
@@ -93,8 +125,8 @@ export function browseNavKeyboard(
         { text: `${index + 1} / ${total}`, callback_data: "noop" },
         { text: index < total - 1 ? "▶" : "·", callback_data: index < total - 1 ? CB.BROWSE_NEXT : "noop" },
       ],
-      [{ text: isFavorite ? "★ Hapus Favorit" : "☆ Jadikan Favorit", callback_data: CB.BROWSE_FAV }],
-      [{ text: "✕ Tutup", callback_data: CB.BROWSE_CLOSE }],
+      [{ text: opts.isSelected ? "☑ Dipilih" : "☐ Pilih", callback_data: CB.BROWSE_SELECT }],
+      bottomRow,
     ],
   };
 }

@@ -63,6 +63,7 @@ export function addSkippedFileToSession(chatId: number, file: PendingFile): void
 // ─── Browse session ───────────────────────────────────────────────────────────
 
 export enum BrowseStep {
+  AwaitingQuery = "browse_query", // used by /search — /setfavorite skips this step
   AwaitingCategory = "browse_category",
   AwaitingTags = "browse_tags",
   AwaitingEventDate = "browse_event_date",
@@ -80,14 +81,18 @@ export type BrowseFile = {
 
 export type BrowseSession = {
   step: BrowseStep;
+  source: "setfavorite" | "search";
   userId: number;
   threadId: number | null;
+  q: string | null; // free-text search query; null = show all (used by /setfavorite)
   categoryId: string | null;
   categoryName: string | null;
   tagIds: string[];
   eventDate: string | null;
   results: BrowseFile[];
   currentIndex: number;
+  selectedIds: string[]; // file ids selected for bulk download (search mode only)
+  filterMessageId: number | null; // tracks the active filter keyboard for in-place edits
   browseMessageId: number | null;
 };
 

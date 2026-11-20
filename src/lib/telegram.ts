@@ -78,11 +78,13 @@ export async function copyMessage(
   toChatId: number,
   fromChatId: number,
   messageId: number,
+  messageThreadId?: number,
 ): Promise<{ message_id: number }> {
   return call("copyMessage", {
     chat_id: toChatId,
     from_chat_id: fromChatId,
     message_id: messageId,
+    ...(messageThreadId ? { message_thread_id: messageThreadId } : {}),
   });
 }
 

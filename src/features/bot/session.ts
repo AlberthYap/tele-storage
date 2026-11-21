@@ -1,4 +1,6 @@
-// In-memory upload session state. One active session per chat at a time.
+import { redis } from "../../lib/redis";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export type PendingFile = {
   fileId: string;
@@ -31,36 +33,6 @@ export type UploadSession = {
   eventDate: string | null; // ISO date string "YYYY-MM-DD"
   keyboardMessageId: number | null; // tracks the active keyboard message for in-place edits
 };
-
-const sessions = new Map<number, UploadSession>();
-
-export function getSession(chatId: number): UploadSession | undefined {
-  return sessions.get(chatId);
-}
-
-export function setSession(chatId: number, session: UploadSession): void {
-  sessions.set(chatId, session);
-}
-
-export function clearSession(chatId: number): void {
-  sessions.delete(chatId);
-}
-
-export function addFileToSession(chatId: number, file: PendingFile): void {
-  const session = sessions.get(chatId);
-  if (session) {
-    session.files.push(file);
-  }
-}
-
-export function addSkippedFileToSession(chatId: number, file: PendingFile): void {
-  const session = sessions.get(chatId);
-  if (session) {
-    session.skippedFiles.push(file);
-  }
-}
-
-// ─── Browse session ───────────────────────────────────────────────────────────
 
 export enum BrowseStep {
   AwaitingQuery = "browse_query", // used by /search — /setfavorite skips this step
@@ -96,16 +68,50 @@ export type BrowseSession = {
   browseMessageId: number | null;
 };
 
-const browseSessions = new Map<number, BrowseSession>();
+// ─── Upload session ───────────────────────────────────────────────────────────
 
-export function getBrowseSession(chatId: number): BrowseSession | undefined {
-  return browseSessions.get(chatId);
+const SESSION_TTL = Number(process.env.SESSION_TTL_SEC ?? 15 * 60);
+
+export async function getSession(chatId: number): Promise<UploadSession | undefined> {
+  const data = await redis.get(`session:upload:${chatId}`);
+  return data ? (JSON.parse(data) as UploadSession) : undefined;
 }
 
-export function setBrowseSession(chatId: number, session: BrowseSession): void {
-  browseSessions.set(chatId, session);
+export async function setSession(chatId: number, session: UploadSession): Promise<void> {
+  await redis.set(`session:upload:${chatId}`, JSON.stringify(session), "EX", SESSION_TTL);
 }
 
-export function clearBrowseSession(chatId: number): void {
-  browseSessions.delete(chatId);
+export async function clearSession(chatId: number): Promise<void> {
+  await redis.del(`session:upload:${chatId}`);
+}
+
+export async function addFileToSession(chatId: number, file: PendingFile): Promise<void> {
+  const session = await getSession(chatId);
+  if (session) {
+    session.files.push(file);
+    await setSession(chatId, session);
+  }
+}
+
+export async function addSkippedFileToSession(chatId: number, file: PendingFile): Promise<void> {
+  const session = await getSession(chatId);
+  if (session) {
+    session.skippedFiles.push(file);
+    await setSession(chatId, session);
+  }
+}
+
+// ─── Browse session ───────────────────────────────────────────────────────────
+
+export async function getBrowseSession(chatId: number): Promise<BrowseSession | undefined> {
+  const data = await redis.get(`session:browse:${chatId}`);
+  return data ? (JSON.parse(data) as BrowseSession) : undefined;
+}
+
+export async function setBrowseSession(chatId: number, session: BrowseSession): Promise<void> {
+  await redis.set(`session:browse:${chatId}`, JSON.stringify(session), "EX", SESSION_TTL);
+}
+
+export async function clearBrowseSession(chatId: number): Promise<void> {
+  await redis.del(`session:browse:${chatId}`);
 }

@@ -162,16 +162,18 @@ export async function handleFile(
   const threadId = (msg.message_thread_id as number | undefined) ?? null;
   const dbUserId = getDbUserId(chatId, userId, isGroup);
   const tOpts = threadId ? { message_thread_id: threadId } : {};
-  const duplicate = await getFileByUniqueId(file.fileUniqueId);
-  const existing = getSession(chatId);
+  const [duplicate, existing] = await Promise.all([
+    getFileByUniqueId(file.fileUniqueId),
+    getSession(chatId),
+  ]);
 
   if (existing) {
     if (duplicate) {
       // Track silently — shown in post-save summary to avoid flooding chat during batch upload.
-      addSkippedFileToSession(chatId, file);
+      await addSkippedFileToSession(chatId, file);
       return;
     }
-    addFileToSession(chatId, file);
+    await addFileToSession(chatId, file);
     await updateSessionKeyboard(chatId, existing);
     return;
   }
@@ -198,7 +200,7 @@ export async function handleFile(
       `📦 *${file.fileName}*\n_Kirim file lagi untuk batch._\n\n📅 Event date (opsional):`,
       { parse_mode: "Markdown", reply_markup: eventDateKeyboard(), ...tOpts },
     );
-    setSession(chatId, {
+    await setSession(chatId, {
       step: UploadStep.AwaitingEventDate,
       files: [file],
       skippedFiles: [],
@@ -220,7 +222,7 @@ export async function handleFile(
     `📦 *${file.fileName}*\n_Kirim file lagi untuk batch._\n\nPilih kategori:`,
     { parse_mode: "Markdown", reply_markup: categoryKeyboard(userCategories) },
   );
-  setSession(chatId, {
+  await setSession(chatId, {
     step: UploadStep.AwaitingCategory,
     files: [file],
     skippedFiles: [],
@@ -286,7 +288,7 @@ export async function handleCallbackQuery(
   if (data === CB.BROWSE_SELECT || data === CB.BROWSE_DOWNLOAD_SELECTED || data.startsWith("browse:")) return handleBrowseNav(chatId, data, threadId);
 
   // Upload flow — requires an active upload session.
-  const session = getSession(chatId);
+  const session = await getSession(chatId);
   if (!session) {
     await sendMessage(chatId, "Session expired. Kirim file lagi.");
     return;
@@ -319,7 +321,7 @@ async function handleCategoryStep(chatId: number, session: UploadSession, data: 
     ...tOpts,
   });
   session.keyboardMessageId = kbMsg.message_id;
-  setSession(chatId, session);
+  await setSession(chatId, session);
 }
 
 async function handleTagStep(chatId: number, session: UploadSession, data: string) {
@@ -342,7 +344,7 @@ async function handleTagStep(chatId: number, session: UploadSession, data: strin
       ...tOpts,
     });
     session.keyboardMessageId = kbMsg.message_id;
-    setSession(chatId, session);
+    await setSession(chatId, session);
     return;
   }
 
@@ -351,7 +353,7 @@ async function handleTagStep(chatId: number, session: UploadSession, data: strin
   const idx = session.tagIds.indexOf(tagId);
   if (idx >= 0) session.tagIds.splice(idx, 1);
   else session.tagIds.push(tagId);
-  setSession(chatId, session);
+  await setSession(chatId, session);
 
   const userTags = await listTags(session.userId);
   if (session.keyboardMessageId) {
@@ -367,7 +369,7 @@ async function handleTagStep(chatId: number, session: UploadSession, data: strin
       ...tOpts,
     });
     session.keyboardMessageId = kbMsg.message_id;
-    setSession(chatId, session);
+    await setSession(chatId, session);
   }
 }
 
@@ -384,7 +386,7 @@ async function handleDateStep(chatId: number, session: UploadSession, data: stri
   session.eventDate = null;
   session.step = UploadStep.AwaitingConfirm;
   session.keyboardMessageId = null;
-  setSession(chatId, session);
+  await setSession(chatId, session);
   await showSummary(chatId, session);
 }
 
@@ -398,7 +400,7 @@ async function handleConfirmStep(
   const tOpts = session.threadId ? { message_thread_id: session.threadId } : {};
 
   if (data === CB.CONFIRM_CANCEL) {
-    clearSession(chatId);
+    await clearSession(chatId);
     await sendMessage(chatId, "❌ Upload dibatalkan.", tOpts);
     return;
   }
@@ -416,7 +418,7 @@ async function handleConfirmStep(
       ...tOpts,
     });
     session.keyboardMessageId = kbMsg.message_id;
-    setSession(chatId, session);
+    await setSession(chatId, session);
     return;
   }
 
@@ -428,8 +430,10 @@ async function handleConfirmStep(
 // ─── handleText ───────────────────────────────────────────────────────────────
 
 export async function handleText(chatId: number, userId: number, text: string, threadId: number | null = null) {
-  const session = getSession(chatId);
-  const browseSession = getBrowseSession(chatId);
+  const [session, browseSession] = await Promise.all([
+    getSession(chatId),
+    getBrowseSession(chatId),
+  ]);
   // threadId from the message takes priority; fall back to active session's thread
   const resolvedThreadId = threadId ?? session?.threadId ?? null;
   const tOpts = resolvedThreadId ? { message_thread_id: resolvedThreadId } : {};
@@ -451,7 +455,7 @@ export async function handleText(chatId: number, userId: number, text: string, t
       ...tOpts,
     });
     session.keyboardMessageId = kbMsg.message_id;
-    setSession(chatId, session);
+    await setSession(chatId, session);
     return;
   }
 
@@ -474,7 +478,7 @@ export async function handleText(chatId: number, userId: number, text: string, t
         });
         session.keyboardMessageId = kbMsg.message_id;
       }
-      setSession(chatId, session);
+      await setSession(chatId, session);
     }
     return;
   }
@@ -486,7 +490,7 @@ export async function handleText(chatId: number, userId: number, text: string, t
     }
     session.eventDate = text;
     session.step = UploadStep.AwaitingConfirm;
-    setSession(chatId, session);
+    await setSession(chatId, session);
     await showSummary(chatId, session);
     return;
   }
@@ -496,7 +500,7 @@ export async function handleText(chatId: number, userId: number, text: string, t
     const bOpts = browseSession.threadId ? { message_thread_id: browseSession.threadId } : {};
     browseSession.q = text.trim();
     browseSession.step = BrowseStep.AwaitingCategory;
-    setBrowseSession(chatId, browseSession);
+    await setBrowseSession(chatId, browseSession);
     const categories = await listCategories(browseSession.userId);
     await sendMessage(chatId, "📁 Filter kategori (opsional):", {
       reply_markup: browseCategoryKeyboard(categories, { showSkipAll: true }),
@@ -513,7 +517,7 @@ export async function handleText(chatId: number, userId: number, text: string, t
       return;
     }
     browseSession.eventDate = text;
-    setBrowseSession(chatId, browseSession);
+    await setBrowseSession(chatId, browseSession);
     await showBrowseResults(chatId, browseSession, bOpts);
     return;
   }
@@ -620,7 +624,10 @@ async function saveAll(chatId: number, session: UploadSession) {
   const category = await getCategoryById(session.categoryId);
   const storageThreadId = category?.threadId ?? null;
 
-  for (const file of session.files) {
+  for (let i = 0; i < session.files.length; i++) {
+    // Telegram allows ~20 messages/min to the same group; pace sends to avoid flood wait.
+    if (i > 0) await new Promise<void>((r) => setTimeout(r, 200));
+    const file = session.files[i]!;
     try {
       // If the file was sent directly to the storage group, reuse the original message reference.
       // Otherwise copy it over so the DB always points to a stable message in the storage group.
@@ -668,7 +675,7 @@ async function saveAll(chatId: number, session: UploadSession) {
 
   const tOpts = session.threadId ? { message_thread_id: session.threadId } : {};
   // Clear session before sending so a file arriving while we await sendMessage starts fresh.
-  clearSession(chatId);
+  await clearSession(chatId);
 
   await sendMessage(
     chatId,
@@ -727,7 +734,7 @@ async function startBrowseFlow(chatId: number, userId: number, threadId: number 
     reply_markup: browseCategoryKeyboard(categories),
     ...tOpts,
   });
-  setBrowseSession(chatId, {
+  await setBrowseSession(chatId, {
     step: BrowseStep.AwaitingCategory,
     source: "setfavorite",
     userId: dbUserId,
@@ -746,13 +753,13 @@ async function startBrowseFlow(chatId: number, userId: number, threadId: number 
 }
 
 async function handleBrowseQuerySkip(chatId: number, cbThreadId: number | null = null) {
-  const session = getBrowseSession(chatId);
+  const session = await getBrowseSession(chatId);
   if (!session || session.step !== BrowseStep.AwaitingQuery) return;
   const tid = session.threadId ?? cbThreadId;
   const tOpts = tid ? { message_thread_id: tid } : {};
   session.q = null;
   session.step = BrowseStep.AwaitingCategory;
-  setBrowseSession(chatId, session);
+  await setBrowseSession(chatId, session);
   const categories = await listCategories(session.userId);
   await sendMessage(chatId, "📁 Filter kategori (opsional):", {
     reply_markup: browseCategoryKeyboard(categories, { showSkipAll: true }),
@@ -763,7 +770,7 @@ async function handleBrowseQuerySkip(chatId: number, cbThreadId: number | null =
 async function startSearchFlow(chatId: number, userId: number, threadId: number | null) {
   const tOpts = threadId ? { message_thread_id: threadId } : {};
   const dbUserId = getDbUserId(chatId, userId, threadId !== null);
-  setBrowseSession(chatId, {
+  await setBrowseSession(chatId, {
     step: BrowseStep.AwaitingQuery,
     source: "search",
     userId: dbUserId,
@@ -786,7 +793,7 @@ async function startSearchFlow(chatId: number, userId: number, threadId: number 
 }
 
 async function handleBrowseCategoryStep(chatId: number, data: string, cbThreadId: number | null = null) {
-  const session = getBrowseSession(chatId);
+  const session = await getBrowseSession(chatId);
   if (!session || session.step !== BrowseStep.AwaitingCategory) return;
   const tid = session.threadId ?? cbThreadId;
   const tOpts = tid ? { message_thread_id: tid } : {};
@@ -804,7 +811,7 @@ async function handleBrowseCategoryStep(chatId: number, data: string, cbThreadId
   }
 
   session.step = BrowseStep.AwaitingTags;
-  setBrowseSession(chatId, session);
+  await setBrowseSession(chatId, session);
 
   const userTags = await listTags(session.userId);
   const header = session.categoryName ? `📁 ${session.categoryName}\n\n` : "";
@@ -813,18 +820,18 @@ async function handleBrowseCategoryStep(chatId: number, data: string, cbThreadId
     ...tOpts,
   });
   session.filterMessageId = tagMsg.message_id;
-  setBrowseSession(chatId, session);
+  await setBrowseSession(chatId, session);
 }
 
 async function handleBrowseTagStep(chatId: number, data: string, cbThreadId: number | null = null) {
-  const session = getBrowseSession(chatId);
+  const session = await getBrowseSession(chatId);
   if (!session || session.step !== BrowseStep.AwaitingTags) return;
   const tid = session.threadId ?? cbThreadId;
   const tOpts = tid ? { message_thread_id: tid } : {};
 
   if (data === CB.BTAG_SKIP || data === CB.BTAG_DONE) {
     session.step = BrowseStep.AwaitingEventDate;
-    setBrowseSession(chatId, session);
+    await setBrowseSession(chatId, session);
     await sendMessage(chatId, "📅 Filter event date (opsional):", {
       reply_markup: { inline_keyboard: [
         [{ text: "📅 Pilih tanggal", callback_data: CB.BDATE_PICK }],
@@ -839,7 +846,7 @@ async function handleBrowseTagStep(chatId: number, data: string, cbThreadId: num
   const idx = session.tagIds.indexOf(tagId);
   if (idx >= 0) session.tagIds.splice(idx, 1);
   else session.tagIds.push(tagId);
-  setBrowseSession(chatId, session);
+  await setBrowseSession(chatId, session);
 
   const userTags = await listTags(session.userId);
   const header = session.categoryName ? `📁 ${session.categoryName}\n\n` : "";
@@ -850,12 +857,12 @@ async function handleBrowseTagStep(chatId: number, data: string, cbThreadId: num
   } else {
     const msg = await sendMessage(chatId, text, { reply_markup: keyboard, ...tOpts });
     session.filterMessageId = msg.message_id;
-    setBrowseSession(chatId, session);
+    await setBrowseSession(chatId, session);
   }
 }
 
 async function handleBrowseDateStep(chatId: number, data: string, cbThreadId: number | null = null) {
-  const session = getBrowseSession(chatId);
+  const session = await getBrowseSession(chatId);
   if (!session || session.step !== BrowseStep.AwaitingEventDate) return;
   const tid = session.threadId ?? cbThreadId;
   const tOpts = tid ? { message_thread_id: tid } : {};
@@ -892,7 +899,7 @@ async function showBrowseResults(
 
   if (rows.length === 0) {
     await sendMessage(chatId, "Tidak ada file yang cocok dengan filter.", tOpts);
-    clearBrowseSession(chatId);
+    await clearBrowseSession(chatId);
     return;
   }
 
@@ -908,7 +915,7 @@ async function showBrowseResults(
   session.results = results;
   session.currentIndex = 0;
   session.step = BrowseStep.Browsing;
-  setBrowseSession(chatId, session);
+  await setBrowseSession(chatId, session);
 
   const first = results[0]!;
   const caption = buildBrowseCaption(first, session.categoryName, 0, results.length);
@@ -921,18 +928,18 @@ async function showBrowseResults(
     ...tOpts,
   });
   session.browseMessageId = msg.message_id;
-  setBrowseSession(chatId, session);
+  await setBrowseSession(chatId, session);
 }
 
 async function handleBrowseNav(chatId: number, data: string, cbThreadId: number | null = null) {
-  const session = getBrowseSession(chatId);
+  const session = await getBrowseSession(chatId);
   if (!session || session.step !== BrowseStep.Browsing || !session.browseMessageId) return;
   const tid = session.threadId ?? cbThreadId;
   const tOpts = tid ? { message_thread_id: tid } : {};
 
   if (data === CB.BROWSE_CLOSE) {
     await deleteMessage(chatId, session.browseMessageId);
-    clearBrowseSession(chatId);
+    await clearBrowseSession(chatId);
     return;
   }
 
@@ -949,7 +956,7 @@ async function handleBrowseNav(chatId: number, data: string, cbThreadId: number 
       buildBrowseCaption(file, session.categoryName, session.currentIndex, session.results.length),
       browseNavKeyboard(session.currentIndex, session.results.length, { mode: "setfavorite", isFavorite: file.isFavorite }),
     );
-    setBrowseSession(chatId, session);
+    await setBrowseSession(chatId, session);
     return;
   }
 
@@ -959,7 +966,7 @@ async function handleBrowseNav(chatId: number, data: string, cbThreadId: number 
     const idx = session.selectedIds.indexOf(file.id);
     if (idx >= 0) session.selectedIds.splice(idx, 1);
     else session.selectedIds.push(file.id);
-    setBrowseSession(chatId, session);
+    await setBrowseSession(chatId, session);
     await editMessageMedia(
       chatId,
       session.browseMessageId,
@@ -981,7 +988,7 @@ async function handleBrowseNav(chatId: number, data: string, cbThreadId: number 
       await sendFileMessage(chatId, file.fileType, file.fileId, file.fileName, tOpts);
     }
     session.selectedIds = [];
-    setBrowseSession(chatId, session);
+    await setBrowseSession(chatId, session);
     return;
   }
 
@@ -991,7 +998,7 @@ async function handleBrowseNav(chatId: number, data: string, cbThreadId: number 
   if (newIndex === session.currentIndex) return;
 
   session.currentIndex = newIndex;
-  setBrowseSession(chatId, session);
+  await setBrowseSession(chatId, session);
 
   const file = session.results[newIndex]!;
   const caption = buildBrowseCaption(file, session.categoryName, newIndex, session.results.length);

@@ -13,6 +13,7 @@
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "elysia": "latest",
+    "ioredis": "^6.0.0",
     "pino": "^10.4.0",
     "postgres": "^4.1.1"
   },

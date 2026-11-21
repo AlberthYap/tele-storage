@@ -1,6 +1,5 @@
 import "dotenv/config";
-import { Elysia } from "elysia";
-import { botWebhook } from "./features/bot";
+import { app } from "./app";
 import { setMyCommands } from "./lib/telegram";
 
 const BOT_COMMANDS = [
@@ -10,11 +9,7 @@ const BOT_COMMANDS = [
   { command: "setfavorite", description: "Cari & tandai file sebagai favorit" },
 ];
 
-const app = new Elysia()
-  .use(botWebhook)
-  .get("/healthz", () => ({ ok: true, ts: Date.now() }))
-  .listen(Number(process.env.PORT ?? 3000));
-
+app.listen(Number(process.env.PORT ?? 3000));
 console.log(`ready on http://localhost:${app.server?.port}`);
 
 setMyCommands(BOT_COMMANDS).catch((err) =>

@@ -12,32 +12,43 @@ function BOT_TOKEN() {
   return process.env.BOT_TOKEN!;
 }
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// Retries once on 429 flood wait, then gives up.
 async function call<T = unknown>(method: string, body: Record<string, unknown>): Promise<T> {
-  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN()}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN()}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
 
-  const json = (await res.json()) as {
-    ok: boolean;
-    result?: T;
-    description?: string;
-    parameters?: { retry_after?: number };
-  };
+    const json = (await res.json()) as {
+      ok: boolean;
+      result?: T;
+      description?: string;
+      parameters?: { retry_after?: number };
+    };
 
-  if (!json.ok) {
-    if (res.status === 429 && json.parameters?.retry_after) {
-      const err = new Error(
-        `rate limited: retry after ${json.parameters.retry_after}s`,
-      ) as Error & { retryAfterSec?: number };
-      err.retryAfterSec = json.parameters.retry_after;
-      throw err;
+    if (!json.ok) {
+      if (res.status === 429 && json.parameters?.retry_after) {
+        if (attempt === 0) {
+          // Wait the requested duration then retry once.
+          await sleep((json.parameters.retry_after + 1) * 1000);
+          continue;
+        }
+        const err = new Error(
+          `rate limited: retry after ${json.parameters.retry_after}s`,
+        ) as Error & { retryAfterSec?: number };
+        err.retryAfterSec = json.parameters.retry_after;
+        throw err;
+      }
+      throw new Error(`Bot API ${method} failed: ${json.description ?? "unknown error"}`);
     }
-    throw new Error(`Bot API ${method} failed: ${json.description ?? "unknown error"}`);
-  }
 
-  return json.result as T;
+    return json.result as T;
+  }
+  throw new Error(`Bot API ${method} failed after retry`);
 }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────

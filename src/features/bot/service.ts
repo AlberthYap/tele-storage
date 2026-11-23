@@ -16,6 +16,7 @@ import {
 import {
   getSession,
   setSession,
+  initSession,
   clearSession,
   addFileToSession,
   addSkippedFileToSession,
@@ -48,7 +49,9 @@ import {
   sendFileMessage,
   editMessageMedia,
   deleteMessage,
+  answerCallbackQuery,
 } from "../../lib/telegram";
+import { redis } from "../../lib/redis";
 import { logger } from "../../lib/logger";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -173,8 +176,8 @@ export async function handleFile(
       await addSkippedFileToSession(chatId, file);
       return;
     }
-    await addFileToSession(chatId, file);
-    await updateSessionKeyboard(chatId, existing);
+    const fileCount = await addFileToSession(chatId, file);
+    await updateSessionKeyboard(chatId, existing, fileCount);
     return;
   }
 
@@ -200,7 +203,7 @@ export async function handleFile(
       `📦 *${file.fileName}*\n_Kirim file lagi untuk batch._\n\n📅 Event date (opsional):`,
       { parse_mode: "Markdown", reply_markup: eventDateKeyboard(), ...tOpts },
     );
-    await setSession(chatId, {
+    const { created: topicCreated, session: topicSession } = await initSession(chatId, {
       step: UploadStep.AwaitingEventDate,
       files: [file],
       skippedFiles: [],
@@ -212,6 +215,7 @@ export async function handleFile(
       eventDate: null,
       keyboardMessageId: kbMsg.message_id,
     });
+    if (!topicCreated) await updateSessionKeyboard(chatId, topicSession, topicSession.files.length);
     return;
   }
 
@@ -222,7 +226,7 @@ export async function handleFile(
     `📦 *${file.fileName}*\n_Kirim file lagi untuk batch._\n\nPilih kategori:`,
     { parse_mode: "Markdown", reply_markup: categoryKeyboard(userCategories) },
   );
-  await setSession(chatId, {
+  const { created, session: activeSession } = await initSession(chatId, {
     step: UploadStep.AwaitingCategory,
     files: [file],
     skippedFiles: [],
@@ -234,20 +238,21 @@ export async function handleFile(
     eventDate: null,
     keyboardMessageId: kbMsg.message_id,
   });
+  if (!created) await updateSessionKeyboard(chatId, activeSession, activeSession.files.length);
 }
 
 // Edits the existing keyboard message in-place instead of sending a new one,
 // so batch uploads don't flood the chat with one message per file.
-async function updateSessionKeyboard(chatId: number, session: UploadSession) {
+async function updateSessionKeyboard(chatId: number, session: UploadSession, count?: number) {
   if (!session.keyboardMessageId) return;
-  const count = session.files.length;
+  const fileCount = count ?? session.files.length;
 
   if (session.step === UploadStep.AwaitingCategory) {
     const userCategories = await listCategories(session.userId);
     await editMessageText(
       chatId,
       session.keyboardMessageId,
-      `📦 *${count} file* — kirim lagi untuk batch, atau pilih kategori:`,
+      `📦 *${fileCount} file* — kirim lagi untuk batch, atau pilih kategori:`,
       { parse_mode: "Markdown", reply_markup: categoryKeyboard(userCategories) },
     );
   } else if (session.step === UploadStep.AwaitingTags) {
@@ -255,14 +260,14 @@ async function updateSessionKeyboard(chatId: number, session: UploadSession) {
     await editMessageText(
       chatId,
       session.keyboardMessageId,
-      `📦 *${count} file* — 🏷 Pilih tag (bisa lebih dari 1):`,
+      `📦 *${fileCount} file* — 🏷 Pilih tag (bisa lebih dari 1):`,
       { parse_mode: "Markdown", reply_markup: tagsKeyboard(userTags, session.tagIds) },
     );
   } else if (session.step === UploadStep.AwaitingEventDate) {
     await editMessageText(
       chatId,
       session.keyboardMessageId,
-      `📦 *${count} file* — 📅 Event date (opsional):`,
+      `📦 *${fileCount} file* — 📅 Event date (opsional):`,
       { parse_mode: "Markdown", reply_markup: eventDateKeyboard() },
     );
   }
@@ -276,6 +281,7 @@ export async function handleCallbackQuery(
   data: string,
   messageId: number,
   threadId: number | null = null,
+  callbackQueryId?: string,
 ) {
   void messageId;
 
@@ -297,7 +303,7 @@ export async function handleCallbackQuery(
   if (data.startsWith(CB.CAT_PREFIX)) return handleCategoryStep(chatId, session, data);
   if (data.startsWith(CB.TAG_PREFIX)) return handleTagStep(chatId, session, data);
   if (data.startsWith(CB.DATE_PREFIX)) return handleDateStep(chatId, session, data);
-  if (data.startsWith(CB.CONFIRM_PREFIX)) return handleConfirmStep(chatId, userId, session, data);
+  if (data.startsWith(CB.CONFIRM_PREFIX)) return handleConfirmStep(chatId, userId, session, data, callbackQueryId);
 }
 
 async function handleCategoryStep(chatId: number, session: UploadSession, data: string) {
@@ -395,17 +401,23 @@ async function handleConfirmStep(
   userId: number,
   session: UploadSession,
   data: string,
+  callbackQueryId?: string,
 ) {
   if (session.step !== UploadStep.AwaitingConfirm) return;
   const tOpts = session.threadId ? { message_thread_id: session.threadId } : {};
 
   if (data === CB.CONFIRM_CANCEL) {
+    if (session.keyboardMessageId) {
+      await editMessageText(chatId, session.keyboardMessageId, "❌ Upload dibatalkan.", {});
+    }
     await clearSession(chatId);
-    await sendMessage(chatId, "❌ Upload dibatalkan.", tOpts);
     return;
   }
 
   if (data === CB.CONFIRM_EDIT) {
+    if (session.keyboardMessageId) {
+      await editMessageText(chatId, session.keyboardMessageId, "✏️ Mengedit metadata...", {});
+    }
     session.step = UploadStep.AwaitingCategory;
     session.categoryId = null;
     session.categoryName = null;
@@ -423,7 +435,18 @@ async function handleConfirmStep(
   }
 
   if (data === CB.CONFIRM_SAVE) {
-    await saveAll(chatId, session);
+    const lockKey = `lock:save:${chatId}`;
+    const acquired = await redis.set(lockKey, "1", "EX", 300, "NX");
+    if (!acquired) {
+      if (callbackQueryId) await answerCallbackQuery(callbackQueryId, "⏳ Sedang diproses, mohon tunggu...");
+      return;
+    }
+    if (callbackQueryId) await answerCallbackQuery(callbackQueryId, "⏳ Menyimpan file, mohon tunggu...");
+    try {
+      await saveAll(chatId, session);
+    } finally {
+      await redis.del(lockKey);
+    }
   }
 }
 
@@ -522,6 +545,23 @@ export async function handleText(chatId: number, userId: number, text: string, t
     return;
   }
 
+  if (text === "/cancel") {
+    const [uploadSession, browseSession_] = await Promise.all([
+      getSession(chatId),
+      getBrowseSession(chatId),
+    ]);
+    if (!uploadSession && !browseSession_) {
+      await sendMessage(chatId, "Tidak ada sesi aktif.", tOpts);
+      return;
+    }
+    if (uploadSession?.keyboardMessageId) {
+      await editMessageText(chatId, uploadSession.keyboardMessageId, "❌ Upload dibatalkan.", {});
+    }
+    await Promise.all([clearSession(chatId), clearBrowseSession(chatId), redis.del(`lock:save:${chatId}`)]);
+    await sendMessage(chatId, "✅ Sesi dibatalkan.", tOpts);
+    return;
+  }
+
   if (text.startsWith("/newcategory ")) {
     await handleNewCategory(chatId, userId, text, tOpts);
     return;
@@ -549,6 +589,7 @@ export async function handleText(chatId: number, userId: number, text: string, t
         "/newcategory `Nama` — buat kategori baru (+ forum topic otomatis di group)",
         "/search — cari file berdasarkan kata kunci, kategori, tag, atau tanggal",
         "/setfavorite — cari file & tandai sebagai favorit",
+        "/cancel — batalkan sesi upload atau browse yang sedang aktif",
         "/help — tampilkan pesan ini",
         "",
         "*Tips:*",
@@ -611,10 +652,21 @@ async function handleNewCategory(
   }
 }
 
+function progressBar(done: number, total: number): string {
+  const BAR_LEN = 10;
+  const filled = Math.round((done / total) * BAR_LEN);
+  const bar = "█".repeat(filled) + "░".repeat(BAR_LEN - filled);
+  return `⏳ Menyimpan... [${bar}] ${done} / ${total}`;
+}
+
 // ─── saveAll ──────────────────────────────────────────────────────────────────
 
 async function saveAll(chatId: number, session: UploadSession) {
   if (!session.categoryId) return;
+  const tOpts_ = session.threadId ? { message_thread_id: session.threadId } : {};
+  const total = session.files.length;
+  const progressMsg = await sendMessage(chatId, progressBar(0, total), tOpts_);
+  const progressMsgId = progressMsg.message_id;
 
   const storageChatId = STORAGE_CHAT_ID();
   const savedFiles: SavedFileEntry[] = [];
@@ -671,9 +723,21 @@ async function saveAll(chatId: number, session: UploadSession) {
       logger.error({ err }, "saveAll file error");
       failed++;
     }
+    // Update progress every 5 files to avoid Telegram rate limits on edits.
+    const done = savedFiles.length + failed;
+    if (done % 5 === 0 || done === total) {
+      await editMessageText(chatId, progressMsgId, progressBar(done, total));
+    }
   }
 
   const tOpts = session.threadId ? { message_thread_id: session.threadId } : {};
+  await editMessageText(chatId, progressMsgId, `✅ ${savedFiles.length} / ${total} file tersimpan.`);
+  // Remove confirm buttons so user cannot click Simpan again after save completes.
+  if (session.keyboardMessageId) {
+    await editMessageText(chatId, session.keyboardMessageId, `📋 *Ringkasan Upload* — tersimpan ✅`, {
+      parse_mode: "Markdown",
+    });
+  }
   // Clear session before sending so a file arriving while we await sendMessage starts fresh.
   await clearSession(chatId);
 
@@ -694,7 +758,7 @@ async function saveAll(chatId: number, session: UploadSession) {
     );
   }
 
-  if (savedFiles.length > 0) {
+  if (savedFiles.length > 0 && savedFiles.length <= 5) {
     const kbMsg = await sendMessage(chatId, "⭐ Tandai sebagai favorit:", {
       reply_markup: favoriteKeyboard(savedFiles),
       ...tOpts,
@@ -1046,9 +1110,11 @@ async function showSummary(chatId: number, session: UploadSession) {
     ``,
     `Simpan sekarang?`,
   ].join("\n");
-  await sendMessage(chatId, text, {
+  const msg = await sendMessage(chatId, text, {
     parse_mode: "Markdown",
     reply_markup: confirmKeyboard(),
     ...tOpts,
   });
+  session.keyboardMessageId = msg.message_id;
+  await setSession(chatId, session);
 }

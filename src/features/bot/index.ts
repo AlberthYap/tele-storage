@@ -29,7 +29,7 @@ export const botWebhook = new Elysia().post(
         const userId: number = cb.from?.id ?? chatId;
         if (!isAuthorized(chatId)) return { ok: true };
         const cbThreadId: number | null = cb.message?.message_thread_id ?? null;
-        await handleCallbackQuery(chatId, userId, cb.data ?? "", cb.message?.message_id ?? 0, cbThreadId);
+        await handleCallbackQuery(chatId, userId, cb.data ?? "", cb.message?.message_id ?? 0, cbThreadId, cb.id);
         return { ok: true };
       }
 

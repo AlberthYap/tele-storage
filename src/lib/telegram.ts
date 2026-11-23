@@ -150,6 +150,14 @@ export async function deleteMessage(chatId: number, messageId: number): Promise<
   }
 }
 
+export async function answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
+  try {
+    await call("answerCallbackQuery", { callback_query_id: callbackQueryId, text });
+  } catch {
+    // best-effort
+  }
+}
+
 export async function setMyCommands(
   commands: { command: string; description: string }[],
 ): Promise<void> {

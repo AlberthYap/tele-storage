@@ -48,6 +48,14 @@ export async function updateCategoryThreadId(id: string, threadId: number): Prom
   await db.update(categories).set({ threadId }).where(eq(categories.id, id));
 }
 
+export async function countFilesByCategory(categoryId: string): Promise<number> {
+  const rows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(files)
+    .where(eq(files.categoryId, categoryId));
+  return rows[0]?.count ?? 0;
+}
+
 export async function deleteCategory(id: string): Promise<void> {
   await db.delete(categories).where(eq(categories.id, id));
 }
@@ -78,6 +86,14 @@ export async function getTagByName(userId: number, name: string): Promise<TagRow
 
 export async function renameTag(id: string, name: string): Promise<void> {
   await db.update(tags).set({ name }).where(eq(tags.id, id));
+}
+
+export async function countFilesByTag(tagId: string): Promise<number> {
+  const rows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(fileTags)
+    .where(eq(fileTags.tagId, tagId));
+  return rows[0]?.count ?? 0;
 }
 
 export async function deleteTag(id: string): Promise<void> {

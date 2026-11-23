@@ -148,6 +148,33 @@ export async function addSkippedFileToSession(chatId: number, file: PendingFile)
   await redis.expire(K.skipped(chatId), SESSION_TTL);
 }
 
+// ─── Manage session ───────────────────────────────────────────────────────────
+
+export type ManageAction = "rename_category" | "delete_category" | "rename_tag" | "delete_tag";
+
+export type ManageSession = {
+  action: ManageAction;
+  userId: number;
+  threadId: number | null;
+  selectedId: string | null;
+  selectedName: string | null;
+  page: number;
+  listMessageId: number | null;
+};
+
+export async function getManageSession(chatId: number): Promise<ManageSession | undefined> {
+  const data = await redis.get(`session:manage:${chatId}`);
+  return data ? (JSON.parse(data) as ManageSession) : undefined;
+}
+
+export async function setManageSession(chatId: number, session: ManageSession): Promise<void> {
+  await redis.set(`session:manage:${chatId}`, JSON.stringify(session), "EX", SESSION_TTL);
+}
+
+export async function clearManageSession(chatId: number): Promise<void> {
+  await redis.del(`session:manage:${chatId}`);
+}
+
 // ─── Browse session ───────────────────────────────────────────────────────────
 
 export async function getBrowseSession(chatId: number): Promise<BrowseSession | undefined> {

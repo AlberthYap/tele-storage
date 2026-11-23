@@ -12,6 +12,12 @@ import {
   toggleFavorite,
   searchFiles,
   getCategoryById,
+  renameCategory,
+  deleteCategory,
+  countFilesByCategory,
+  renameTag,
+  deleteTag,
+  countFilesByTag,
 } from "../files";
 import {
   getSession,
@@ -23,12 +29,16 @@ import {
   getBrowseSession,
   setBrowseSession,
   clearBrowseSession,
+  getManageSession,
+  setManageSession,
+  clearManageSession,
   UploadStep,
   BrowseStep,
   type PendingFile,
   type UploadSession,
   type BrowseSession,
   type BrowseFile,
+  type ManageSession,
 } from "./session";
 import {
   categoryKeyboard,
@@ -39,6 +49,8 @@ import {
   browseCategoryKeyboard,
   browseTagsKeyboard,
   browseNavKeyboard,
+  manageListKeyboard,
+  manageConfirmDeleteKeyboard,
   CB,
 } from "./keyboards";
 import {
@@ -284,6 +296,15 @@ export async function handleCallbackQuery(
   callbackQueryId?: string,
 ) {
   void messageId;
+
+  // Manage flow (rename/delete category & tag)
+  if (
+    data.startsWith(CB.MGT_CAT_PREFIX) ||
+    data.startsWith(CB.MGT_TAG_PREFIX) ||
+    data.startsWith(CB.MGT_PAGE_PREFIX) ||
+    data === CB.MGT_CONFIRM_DELETE ||
+    data === CB.MGT_CANCEL
+  ) return handleManageCallback(chatId, data);
 
   // Browse flow uses its own session — must be routed before the upload session guard.
   if (data.startsWith(CB.FAV_PREFIX)) return handleFavoriteToggle(chatId, data);
@@ -562,6 +583,33 @@ export async function handleText(chatId: number, userId: number, text: string, t
     return;
   }
 
+  if (text === "/renamecategory") {
+    await startManageFlow(chatId, userId, "rename_category", threadId);
+    return;
+  }
+
+  if (text === "/deletecategory") {
+    await startManageFlow(chatId, userId, "delete_category", threadId);
+    return;
+  }
+
+  if (text === "/renametag") {
+    await startManageFlow(chatId, userId, "rename_tag", threadId);
+    return;
+  }
+
+  if (text === "/deletetag") {
+    await startManageFlow(chatId, userId, "delete_tag", threadId);
+    return;
+  }
+
+  // Manage flow: awaiting new name after item was selected
+  const manageSession = await getManageSession(chatId);
+  if (manageSession?.selectedId && (manageSession.action === "rename_category" || manageSession.action === "rename_tag")) {
+    await handleManageRenameInput(chatId, manageSession, text, tOpts);
+    return;
+  }
+
   if (text.startsWith("/newcategory ")) {
     await handleNewCategory(chatId, userId, text, tOpts);
     return;
@@ -589,6 +637,10 @@ export async function handleText(chatId: number, userId: number, text: string, t
         "/newcategory `Nama` — buat kategori baru (+ forum topic otomatis di group)",
         "/search — cari file berdasarkan kata kunci, kategori, tag, atau tanggal",
         "/setfavorite — cari file & tandai sebagai favorit",
+        "/renamecategory — ubah nama kategori",
+        "/deletecategory — hapus kategori",
+        "/renametag — ubah nama tag",
+        "/deletetag — hapus tag",
         "/cancel — batalkan sesi upload atau browse yang sedang aktif",
         "/help — tampilkan pesan ini",
         "",
@@ -765,6 +817,141 @@ async function saveAll(chatId: number, session: UploadSession) {
     });
     postSaveStates.set(chatId, { messageId: kbMsg.message_id, files: savedFiles });
   }
+}
+
+// ─── Manage flow (rename / delete category & tag) ────────────────────────────
+
+async function startManageFlow(chatId: number, userId: number, action: ManageSession["action"], threadId: number | null) {
+  const tOpts = threadId ? { message_thread_id: threadId } : {};
+  const isCategory = action.includes("category");
+  const isRename = action.includes("rename");
+  const items = isCategory ? await listCategories(userId) : await listTags(userId);
+  if (items.length === 0) {
+    await sendMessage(chatId, `Belum ada ${isCategory ? "kategori" : "tag"}.`, tOpts);
+    return;
+  }
+  const prefix = isCategory ? CB.MGT_CAT_PREFIX : CB.MGT_TAG_PREFIX;
+  const label = isRename
+    ? `Pilih ${isCategory ? "kategori" : "tag"} yang ingin diubah namanya:`
+    : `Pilih ${isCategory ? "kategori" : "tag"} yang ingin dihapus:`;
+  const msg = await sendMessage(chatId, label, {
+    reply_markup: manageListKeyboard(items, prefix, 0),
+    ...tOpts,
+  });
+  await setManageSession(chatId, {
+    action,
+    userId,
+    threadId,
+    selectedId: null,
+    selectedName: null,
+    page: 0,
+    listMessageId: msg.message_id,
+  });
+}
+
+async function handleManageCallback(chatId: number, data: string) {
+  const session = await getManageSession(chatId);
+  if (!session) return;
+  const tOpts = session.threadId ? { message_thread_id: session.threadId } : {};
+  const isCategory = session.action.includes("category");
+
+  if (data === CB.MGT_CANCEL) {
+    if (session.listMessageId) await editMessageText(chatId, session.listMessageId, "✕ Dibatalkan.", {});
+    await clearManageSession(chatId);
+    return;
+  }
+
+  if (data.startsWith(CB.MGT_PAGE_PREFIX)) {
+    const page = Number(data.slice(CB.MGT_PAGE_PREFIX.length));
+    const items = isCategory ? await listCategories(session.userId) : await listTags(session.userId);
+    const prefix = isCategory ? CB.MGT_CAT_PREFIX : CB.MGT_TAG_PREFIX;
+    const isRename = session.action.includes("rename");
+    const label = isRename
+      ? `Pilih ${isCategory ? "kategori" : "tag"} yang ingin diubah namanya:`
+      : `Pilih ${isCategory ? "kategori" : "tag"} yang ingin dihapus:`;
+    if (session.listMessageId) {
+      await editMessageText(chatId, session.listMessageId, label, { reply_markup: manageListKeyboard(items, prefix, page) });
+    }
+    session.page = page;
+    await setManageSession(chatId, session);
+    return;
+  }
+
+  // Item selected
+  const prefix = isCategory ? CB.MGT_CAT_PREFIX : CB.MGT_TAG_PREFIX;
+  if (data.startsWith(prefix)) {
+    const id = data.slice(prefix.length);
+    const items = isCategory ? await listCategories(session.userId) : await listTags(session.userId);
+    const item = items.find((i) => i.id === id);
+    if (!item) return;
+    session.selectedId = id;
+    session.selectedName = item.name;
+    await setManageSession(chatId, session);
+
+    if (session.action.includes("rename")) {
+      if (session.listMessageId) await editMessageText(chatId, session.listMessageId, `✏️ "${item.name}" dipilih. Ketik nama baru:`, {});
+    } else {
+      // Count affected files before showing confirm dialog
+      const fileCount = isCategory
+        ? await countFilesByCategory(id)
+        : await countFilesByTag(id);
+
+      if (isCategory && fileCount > 0) {
+        // Category can't be deleted while files reference it — block upfront
+        if (session.listMessageId) {
+          await editMessageText(
+            chatId,
+            session.listMessageId,
+            `❌ Kategori *"${item.name}"* tidak bisa dihapus — masih dipakai oleh ${fileCount} file.`,
+            { parse_mode: "Markdown" },
+          );
+        }
+        await clearManageSession(chatId);
+        return;
+      }
+
+      const countNote = fileCount > 0 ? `\n_(asosiasi tag akan dihapus dari ${fileCount} file)_` : "";
+      if (session.listMessageId) {
+        await editMessageText(
+          chatId,
+          session.listMessageId,
+          `Hapus ${isCategory ? "kategori" : "tag"} *"${item.name}"*?${countNote}`,
+          { parse_mode: "Markdown", reply_markup: manageConfirmDeleteKeyboard(item.name) },
+        );
+      }
+    }
+    return;
+  }
+
+  if (data === CB.MGT_CONFIRM_DELETE && session.selectedId) {
+    try {
+      if (isCategory) await deleteCategory(session.selectedId);
+      else await deleteTag(session.selectedId);
+      if (session.listMessageId) await editMessageText(chatId, session.listMessageId, `✅ "${session.selectedName}" berhasil dihapus.`, {});
+    } catch {
+      if (session.listMessageId) await editMessageText(chatId, session.listMessageId, `❌ Tidak bisa dihapus — masih ada file yang menggunakan ${isCategory ? "kategori" : "tag"} ini.`, {});
+    }
+    await clearManageSession(chatId);
+  }
+}
+
+async function handleManageRenameInput(chatId: number, session: ManageSession, text: string, tOpts: Record<string, unknown>) {
+  const isCategory = session.action.includes("category");
+  const newName = text.trim();
+  if (!newName) {
+    await sendMessage(chatId, "Nama tidak boleh kosong.", tOpts);
+    return;
+  }
+  try {
+    if (isCategory) await renameCategory(session.selectedId!, newName);
+    else await renameTag(session.selectedId!, newName);
+    if (session.listMessageId) {
+      await editMessageText(chatId, session.listMessageId, `✅ "${session.selectedName}" diubah menjadi "${newName}".`, {});
+    }
+  } catch {
+    await sendMessage(chatId, `❌ Nama "${newName}" sudah dipakai.`, tOpts);
+  }
+  await clearManageSession(chatId);
 }
 
 async function handleFavoriteToggle(chatId: number, data: string) {

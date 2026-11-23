@@ -29,7 +29,46 @@ export const CB = {
   BROWSE_SELECT: "browse:select",
   BROWSE_DOWNLOAD_SELECTED: "browse:dl_selected",
   BROWSE_CLOSE: "browse:close",
+  // Manage flow (rename/delete category & tag)
+  MGT_CAT_PREFIX: "mgt:cat:",
+  MGT_TAG_PREFIX: "mgt:tag:",
+  MGT_PAGE_PREFIX: "mgt:page:",
+  MGT_CONFIRM_DELETE: "mgt:confirm_delete",
+  MGT_CANCEL: "mgt:cancel",
 } as const;
+
+const MGT_PAGE_SIZE = 8;
+
+export function manageListKeyboard(
+  items: { id: string; name: string }[],
+  prefix: string,
+  page: number,
+): { inline_keyboard: InlineButton[][] } {
+  const start = page * MGT_PAGE_SIZE;
+  const pageItems = items.slice(start, start + MGT_PAGE_SIZE);
+  const totalPages = Math.ceil(items.length / MGT_PAGE_SIZE);
+
+  const rows: InlineButton[][] = pageItems.map((item) => [
+    { text: item.name, callback_data: `${prefix}${item.id}` },
+  ]);
+
+  const nav: InlineButton[] = [];
+  if (page > 0) nav.push({ text: "◀ Prev", callback_data: `${CB.MGT_PAGE_PREFIX}${page - 1}` });
+  if (page < totalPages - 1) nav.push({ text: "Next ▶", callback_data: `${CB.MGT_PAGE_PREFIX}${page + 1}` });
+  if (nav.length > 0) rows.push(nav);
+
+  rows.push([{ text: "✕ Batal", callback_data: CB.MGT_CANCEL }]);
+  return { inline_keyboard: rows };
+}
+
+export function manageConfirmDeleteKeyboard(name: string): { inline_keyboard: InlineButton[][] } {
+  return {
+    inline_keyboard: [
+      [{ text: `🗑 Hapus "${name}"`, callback_data: CB.MGT_CONFIRM_DELETE }],
+      [{ text: "✕ Batal", callback_data: CB.MGT_CANCEL }],
+    ],
+  };
+}
 
 export function categoryKeyboard(categories: { id: string; name: string }[]): {
   inline_keyboard: InlineButton[][];

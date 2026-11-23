@@ -1,38 +1,67 @@
-# Daftar File Panduan
+# Telegram File Vault
 
-Kerjakan urut. Setiap file punya **prasyarat** di bagian atas — jangan loncat.
+Personal file management platform built on top of Telegram. Send files to the bot — it records metadata to PostgreSQL. Files never touch the server; Telegram stores them.
 
-**Baca dulu sebelum M0:** [00-FOLDERING.md](00-FOLDERING.md) — struktur
-folder feature-based + aturan "file ini taruh di mana".
+## How it works
 
-## Urutan eksekusi
+1. Send a file to the bot
+2. Choose category, tags, and optional event date
+3. Confirm — bot runs `copyMessage` to the storage channel
+4. Metadata saved to Neon (file name, category, tags, event date, storage message reference)
+5. Search files anytime via `/search` or `/setfavorite`
 
-| # | File | Apa yang dibangun | Prasyarat |
-|---|---|---|---|
-| 00 | [00-M0-hello-world.md](00-M0-hello-world.md) | Elysia hidup di localhost:3000, balas JSON | Bun terinstall |
-| 01 | [01-M1-storage-interface.md](01-M1-storage-interface.md) | Storage interface + LocalDiskStorage + CLI | M0 |
-| 02 | [02-M1.5-teleproto-hello.md](02-M1.5-teleproto-hello.md) | Login teleproto, kirim 1 pesan ke channel | M1 + akun Telegram + 4 nilai |
-| 03 | [03-M2-storage-telegram.md](03-M2-storage-telegram.md) | TelegramStorage adapter, swap BACKEND=telegram | M1.5 |
-| 04 | [04-M3-database.md](04-M3-database.md) | SQLite + Drizzle, ganti sidecar dengan DB | M2 |
-| 05 | [05-M4-http-api.md](05-M4-http-api.md) | REST API + HMAC presigned links | M3 |
-| 06 | [07-M6-bot.md](07-M6-bot.md) | **Bot Telegram** — kendali + terima file kecil | M4 |
-| 07 | [06-M5-frontend.md](06-M5-frontend.md) | SvelteKit UI (web) — setelah bot stabil | M6 |
-| 08 | [08-M6.5-hardening.md](08-M6.5-hardening.md) | Queue + flood-wait + orphan cleanup | M4+ (frontend & bot tidak wajib) |
-| 09 | [09-M7-polish.md](09-M7-polish.md) | README + LICENSE + tests + deploy | Semua di atas |
+## Stack
 
-## Catatan urutan
+- **Runtime**: Bun
+- **Framework**: Elysia
+- **Database**: Neon (PostgreSQL) + Drizzle ORM
+- **Sessions**: Redis (ioredis)
+- **Deployment**: Vercel
 
-- **M0–M4** adalah fondasi backend. Tidak butuh bot, tidak butuh web —
-  CLI + `curl` sudah cukup. Kerjakan berurutan.
-- **M6 (bot) naik** duluan sebelum M5 (web), supaya Anda lihat
-  program Anda "hidup" di Telegram lebih cepat.
-- **M5 (web) turun** setelah M6, supaya Anda sudah yakin backend
-  stabil sebelum bikin UI.
-- **M6.5 (hardening)** bisa kapan saja setelah M4 — fleksibel.
-- **M7 (polish)** selalu terakhir.
+## Getting started
 
-## File konteks
+```bash
+# Install dependencies
+bun install
 
-- [PRD.md](PRD.md) — apa dan kenapa Kanal dibuat
-- [00-FOLDERING.md](00-FOLDERING.md) — struktur folder feature-based
-- `SETUP.md` — file lama, sudah usang, abaikan (tidak ada di folder ini)
+# Copy env file
+cp .env.example .env
+# Fill in BOT_TOKEN, DATABASE_URL, STORAGE_CHAT_ID, AUTHORIZED_CHAT_IDS, WEBHOOK_SECRET
+# Optional: REDIS_URL (default: redis://localhost:6379), SESSION_TTL_SEC (default: 900)
+
+# Apply database migrations
+bun run db:migrate
+
+# Run dev server
+bun run dev
+```
+
+## Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `BOT_TOKEN` | ✓ | Telegram bot token from @BotFather |
+| `DATABASE_URL` | ✓ | PostgreSQL connection string (Neon) |
+| `STORAGE_CHAT_ID` | ✓ | Telegram channel/group ID used as file storage |
+| `AUTHORIZED_CHAT_IDS` | ✓ | Comma-separated chat IDs allowed to use the bot |
+| `WEBHOOK_SECRET` | ✓ | Secret token for Telegram webhook validation |
+| `REDIS_URL` | — | Redis connection string (default: `redis://localhost:6379`) |
+| `SESSION_TTL_SEC` | — | Session TTL in seconds (default: `900`) |
+| `PORT` | — | Port for local dev server (default: `3000`) |
+
+## Database
+
+```bash
+bun run db:generate   # generate migration files from schema
+bun run db:migrate    # apply migrations
+bun run db:push       # push schema directly (dev only)
+```
+
+## Bot commands
+
+| Command | Description |
+|---|---|
+| `/help` | Show all commands |
+| `/newcategory <name>` | Create a new category |
+| `/search` | Search files by keyword, category, tag, or date |
+| `/setfavorite` | Find and mark files as favorite |

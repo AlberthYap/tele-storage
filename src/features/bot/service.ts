@@ -18,6 +18,8 @@ import {
   renameTag,
   deleteTag,
   countFilesByTag,
+  getRecentFiles,
+  getStats,
 } from "../files";
 import {
   getSession,
@@ -620,6 +622,17 @@ export async function handleText(chatId: number, userId: number, text: string, t
     return;
   }
 
+  if (text === "/recent") {
+    await startRecentFlow(chatId, userId, resolvedThreadId);
+    return;
+  }
+
+  if (text === "/stats") {
+    const dbUserId = getDbUserId(chatId, userId, threadId !== null);
+    await handleStats(chatId, dbUserId, tOpts);
+    return;
+  }
+
   if (text === "/search" || text.startsWith("/search ")) {
     await startSearchFlow(chatId, userId, resolvedThreadId);
     return;
@@ -637,6 +650,8 @@ export async function handleText(chatId: number, userId: number, text: string, t
         "/newcategory `Nama` — buat kategori baru (+ forum topic otomatis di group)",
         "/search — cari file berdasarkan kata kunci, kategori, tag, atau tanggal",
         "/setfavorite — cari file & tandai sebagai favorit",
+        "/recent — lihat 20 upload terbaru",
+        "/stats — lihat statistik penyimpanan",
         "/renamecategory — ubah nama kategori",
         "/deletecategory — hapus kategori",
         "/renametag — ubah nama tag",
@@ -702,6 +717,28 @@ async function handleNewCategory(
   } else {
     await sendMessage(chatId, `✅ Kategori "${name}" dibuat.`, tOpts);
   }
+}
+
+async function handleStats(chatId: number, userId: number, tOpts: Record<string, unknown>) {
+  const stats = await getStats(userId);
+  const typeLines = stats.byFileType.map((t) => `• ${t.fileType}: ${t.count}`).join("\n");
+
+  const text = [
+    "📊 *Statistik*",
+    "",
+    `📦 Total file: ${stats.totalFiles}`,
+    `📁 Kategori: ${stats.totalCategories}`,
+    `🏷 Tag: ${stats.totalTags}`,
+    "",
+    "*By tipe:*",
+    typeLines || "—",
+    "",
+    "*Upload terakhir:*",
+    `• 7 hari: ${stats.last7Days}`,
+    `• 30 hari: ${stats.last30Days}`,
+  ].join("\n");
+
+  await sendMessage(chatId, text, { parse_mode: "Markdown", ...tOpts });
 }
 
 function progressBar(done: number, total: number): string {
@@ -1163,6 +1200,17 @@ async function showBrowseResults(
     isFavorite: r.isFavorite,
   }));
 
+  await displayBrowseResults(chatId, session, results, tOpts);
+}
+
+// Sets up browsing state and sends the first result with nav keyboard.
+// Shared by /search, /setfavorite, and /recent — each only differs in how `results` is fetched.
+async function displayBrowseResults(
+  chatId: number,
+  session: BrowseSession,
+  results: BrowseFile[],
+  tOpts: Record<string, unknown>,
+) {
   session.results = results;
   session.currentIndex = 0;
   session.step = BrowseStep.Browsing;
@@ -1170,9 +1218,9 @@ async function showBrowseResults(
 
   const first = results[0]!;
   const caption = buildBrowseCaption(first, session.categoryName, 0, results.length);
-  const navOpts = session.source === "search"
-    ? { mode: "search" as const, isSelected: false, selectedCount: 0 }
-    : { mode: "setfavorite" as const, isFavorite: first.isFavorite };
+  const navOpts = session.source === "setfavorite"
+    ? { mode: "setfavorite" as const, isFavorite: first.isFavorite }
+    : { mode: "search" as const, isSelected: false, selectedCount: 0 };
   const keyboard = browseNavKeyboard(0, results.length, navOpts);
   const msg = await sendFileMessage(chatId, first.fileType, first.fileId, caption, {
     reply_markup: keyboard,
@@ -1180,6 +1228,45 @@ async function showBrowseResults(
   });
   session.browseMessageId = msg.message_id;
   await setBrowseSession(chatId, session);
+}
+
+async function startRecentFlow(chatId: number, userId: number, threadId: number | null) {
+  const tOpts = threadId ? { message_thread_id: threadId } : {};
+  const dbUserId = getDbUserId(chatId, userId, threadId !== null);
+  const rows = await getRecentFiles(dbUserId, 20);
+
+  if (rows.length === 0) {
+    await sendMessage(chatId, "Belum ada file tersimpan.", tOpts);
+    return;
+  }
+
+  const results: BrowseFile[] = rows.map((r) => ({
+    id: r.id,
+    fileName: r.fileName,
+    fileType: r.fileType ?? "document",
+    fileId: r.fileId,
+    eventDate: r.eventDate,
+    isFavorite: r.isFavorite,
+  }));
+
+  const session: BrowseSession = {
+    step: BrowseStep.AwaitingQuery,
+    source: "recent",
+    userId: dbUserId,
+    threadId,
+    q: null,
+    categoryId: null,
+    categoryName: null,
+    tagIds: [],
+    eventDate: null,
+    results: [],
+    currentIndex: 0,
+    selectedIds: [],
+    filterMessageId: null,
+    browseMessageId: null,
+  };
+
+  await displayBrowseResults(chatId, session, results, tOpts);
 }
 
 async function handleBrowseNav(chatId: number, data: string, cbThreadId: number | null = null) {
@@ -1211,7 +1298,7 @@ async function handleBrowseNav(chatId: number, data: string, cbThreadId: number 
     return;
   }
 
-  if (data === CB.BROWSE_SELECT && session.source === "search") {
+  if (data === CB.BROWSE_SELECT && session.source !== "setfavorite") {
     const file = session.results[session.currentIndex];
     if (!file) return;
     const idx = session.selectedIds.indexOf(file.id);
@@ -1233,7 +1320,7 @@ async function handleBrowseNav(chatId: number, data: string, cbThreadId: number 
     return;
   }
 
-  if (data === CB.BROWSE_DOWNLOAD_SELECTED && session.source === "search") {
+  if (data === CB.BROWSE_DOWNLOAD_SELECTED && session.source !== "setfavorite") {
     const toSend = session.results.filter((f) => session.selectedIds.includes(f.id));
     for (const file of toSend) {
       await sendFileMessage(chatId, file.fileType, file.fileId, file.fileName, tOpts);
@@ -1253,9 +1340,9 @@ async function handleBrowseNav(chatId: number, data: string, cbThreadId: number 
 
   const file = session.results[newIndex]!;
   const caption = buildBrowseCaption(file, session.categoryName, newIndex, session.results.length);
-  const navOpts = session.source === "search"
-    ? { mode: "search" as const, isSelected: session.selectedIds.includes(file.id), selectedCount: session.selectedIds.length }
-    : { mode: "setfavorite" as const, isFavorite: file.isFavorite };
+  const navOpts = session.source === "setfavorite"
+    ? { mode: "setfavorite" as const, isFavorite: file.isFavorite }
+    : { mode: "search" as const, isSelected: session.selectedIds.includes(file.id), selectedCount: session.selectedIds.length };
   await editMessageMedia(
     chatId,
     session.browseMessageId,

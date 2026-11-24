@@ -53,7 +53,7 @@ export type BrowseFile = {
 
 export type BrowseSession = {
   step: BrowseStep;
-  source: "setfavorite" | "search";
+  source: "setfavorite" | "search" | "recent";
   userId: number;
   threadId: number | null;
   q: string | null; // free-text search query; null = show all (used by /setfavorite)

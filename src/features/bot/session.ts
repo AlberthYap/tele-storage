@@ -47,7 +47,9 @@ export type BrowseFile = {
   fileName: string;
   fileType: string;
   fileId: string;
+  caption: string | null;
   eventDate: string | null;
+  uploadedAt: string; // ISO timestamp
   isFavorite: boolean;
 };
 

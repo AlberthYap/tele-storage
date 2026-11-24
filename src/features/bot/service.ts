@@ -1196,7 +1196,9 @@ async function showBrowseResults(
     fileName: r.fileName,
     fileType: r.fileType ?? "document",
     fileId: r.fileId,
+    caption: r.caption,
     eventDate: r.eventDate,
+    uploadedAt: r.createdAt.toISOString(),
     isFavorite: r.isFavorite,
   }));
 
@@ -1245,7 +1247,9 @@ async function startRecentFlow(chatId: number, userId: number, threadId: number 
     fileName: r.fileName,
     fileType: r.fileType ?? "document",
     fileId: r.fileId,
+    caption: r.caption,
     eventDate: r.eventDate,
+    uploadedAt: r.createdAt.toISOString(),
     isFavorite: r.isFavorite,
   }));
 
@@ -1362,7 +1366,9 @@ function buildBrowseCaption(
   total: number,
 ): string {
   const lines = [`📄 ${file.fileName}`, `📁 ${categoryName ?? "-"}`];
-  if (file.eventDate) lines.push(`📅 ${file.eventDate}`);
+  if (file.caption) lines.push(`📝 ${file.caption}`);
+  if (file.eventDate) lines.push(`📅 Event: ${file.eventDate}`);
+  lines.push(`🕘 Upload: ${file.uploadedAt.split("T")[0]}`);
   if (total > 1) lines.push(`\n${index + 1} dari ${total} file`);
   return lines.join("\n");
 }

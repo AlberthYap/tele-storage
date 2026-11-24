@@ -14,9 +14,13 @@ function BOT_TOKEN() {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// Retries once on 429 flood wait, then gives up.
+const MAX_ATTEMPTS = 4;
+
+// Honors Telegram's `retry_after` (authoritative flood-wait duration) on 429, retrying up to
+// MAX_ATTEMPTS times. Each wait already includes Telegram's requested delay, so this naturally
+// backs off instead of hammering the API again immediately.
 async function call<T = unknown>(method: string, body: Record<string, unknown>): Promise<T> {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN()}/${method}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -31,16 +35,16 @@ async function call<T = unknown>(method: string, body: Record<string, unknown>):
     };
 
     if (!json.ok) {
-      if (res.status === 429 && json.parameters?.retry_after) {
-        if (attempt === 0) {
-          // Wait the requested duration then retry once.
-          await sleep((json.parameters.retry_after + 1) * 1000);
+      const retryAfter = json.parameters?.retry_after;
+      if (res.status === 429 && typeof retryAfter === "number") {
+        if (attempt < MAX_ATTEMPTS - 1) {
+          await sleep((retryAfter + 1) * 1000);
           continue;
         }
-        const err = new Error(
-          `rate limited: retry after ${json.parameters.retry_after}s`,
-        ) as Error & { retryAfterSec?: number };
-        err.retryAfterSec = json.parameters.retry_after;
+        const err = new Error(`rate limited: retry after ${retryAfter}s`) as Error & {
+          retryAfterSec?: number;
+        };
+        err.retryAfterSec = retryAfter;
         throw err;
       }
       throw new Error(`Bot API ${method} failed: ${json.description ?? "unknown error"}`);
@@ -48,7 +52,7 @@ async function call<T = unknown>(method: string, body: Record<string, unknown>):
 
     return json.result as T;
   }
-  throw new Error(`Bot API ${method} failed after retry`);
+  throw new Error(`Bot API ${method} failed after ${MAX_ATTEMPTS} attempts`);
 }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────

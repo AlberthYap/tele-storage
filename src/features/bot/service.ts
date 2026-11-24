@@ -21,6 +21,7 @@ import {
   getRecentFiles,
   getStats,
 } from "../files";
+import { issueLoginCode } from "../auth";
 import {
   getSession,
   setSession,
@@ -633,6 +634,21 @@ export async function handleText(chatId: number, userId: number, text: string, t
     return;
   }
 
+  if (text === "/login") {
+    const dbUserId = getDbUserId(chatId, userId, threadId !== null);
+    const result = await issueLoginCode(dbUserId);
+    if ("cooldownSeconds" in result) {
+      await sendMessage(chatId, `⏳ Tunggu ${result.cooldownSeconds} detik lagi sebelum minta kode baru.`, tOpts);
+      return;
+    }
+    await sendMessage(
+      chatId,
+      `🔑 Kode login dashboard: \`${result.code}\`\n\nMasukkan kode ini di halaman login. Berlaku 5 menit, cuma bisa dipakai sekali.`,
+      { parse_mode: "Markdown", ...tOpts },
+    );
+    return;
+  }
+
   if (text === "/search" || text.startsWith("/search ")) {
     await startSearchFlow(chatId, userId, resolvedThreadId);
     return;
@@ -652,6 +668,7 @@ export async function handleText(chatId: number, userId: number, text: string, t
         "/setfavorite — cari file & tandai sebagai favorit",
         "/recent — lihat 20 upload terbaru",
         "/stats — lihat statistik penyimpanan",
+        "/login — dapat kode login buat dashboard web",
         "/renamecategory — ubah nama kategori",
         "/deletecategory — hapus kategori",
         "/renametag — ubah nama tag",

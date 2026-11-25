@@ -1,6 +1,15 @@
 import { Elysia } from "elysia";
+import { cors } from "@elysiajs/cors";
 import { botWebhook } from "./features/bot";
+import { filesRoute } from "./features/files/route";
+import { authRoute } from "./features/auth";
 import { setMyCommands } from "./lib/telegram";
+
+// Comma-separated list of allowed frontend origins, e.g. "http://localhost:5173,https://vault.example.com"
+const corsOrigins = (process.env.CORS_ORIGIN ?? "http://localhost:5173")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
 
 const BOT_COMMANDS = [
   { command: "help", description: "Lihat semua perintah" },
@@ -13,11 +22,15 @@ const BOT_COMMANDS = [
   { command: "deletecategory", description: "Hapus kategori" },
   { command: "renametag", description: "Ubah nama tag" },
   { command: "deletetag", description: "Hapus tag" },
+  { command: "login", description: "Dapat kode login buat dashboard web" },
   { command: "cancel", description: "Batalkan sesi upload atau browse yang sedang aktif" },
 ];
 
 export const app = new Elysia()
+  .use(cors({ origin: corsOrigins, credentials: true }))
   .use(botWebhook)
+  .use(filesRoute)
+  .use(authRoute)
   .get("/healthz", () => ({ ok: true, ts: Date.now() }));
 
 // Register commands once per cold start (best-effort)

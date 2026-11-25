@@ -21,6 +21,7 @@ import {
   getRecentFiles,
   getStats,
 } from "../files";
+import { issueLoginCode } from "../auth";
 import {
   getSession,
   setSession,
@@ -66,6 +67,7 @@ import {
   answerCallbackQuery,
 } from "../../lib/telegram";
 import { redis } from "../../lib/redis";
+import { runPaced } from "../../lib/paced";
 import { logger } from "../../lib/logger";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -633,6 +635,21 @@ export async function handleText(chatId: number, userId: number, text: string, t
     return;
   }
 
+  if (text === "/login") {
+    const dbUserId = getDbUserId(chatId, userId, threadId !== null);
+    const result = await issueLoginCode(dbUserId);
+    if ("cooldownSeconds" in result) {
+      await sendMessage(chatId, `⏳ Tunggu ${result.cooldownSeconds} detik lagi sebelum minta kode baru.`, tOpts);
+      return;
+    }
+    await sendMessage(
+      chatId,
+      `🔑 Kode login dashboard: \`${result.code}\`\n\nMasukkan kode ini di halaman login. Berlaku 5 menit, cuma bisa dipakai sekali.`,
+      { parse_mode: "Markdown", ...tOpts },
+    );
+    return;
+  }
+
   if (text === "/search" || text.startsWith("/search ")) {
     await startSearchFlow(chatId, userId, resolvedThreadId);
     return;
@@ -652,6 +669,7 @@ export async function handleText(chatId: number, userId: number, text: string, t
         "/setfavorite — cari file & tandai sebagai favorit",
         "/recent — lihat 20 upload terbaru",
         "/stats — lihat statistik penyimpanan",
+        "/login — dapat kode login buat dashboard web",
         "/renamecategory — ubah nama kategori",
         "/deletecategory — hapus kategori",
         "/renametag — ubah nama tag",
@@ -752,24 +770,22 @@ function progressBar(done: number, total: number): string {
 
 async function saveAll(chatId: number, session: UploadSession) {
   if (!session.categoryId) return;
+  const categoryId = session.categoryId;
   const tOpts_ = session.threadId ? { message_thread_id: session.threadId } : {};
   const total = session.files.length;
   const progressMsg = await sendMessage(chatId, progressBar(0, total), tOpts_);
   const progressMsgId = progressMsg.message_id;
 
   const storageChatId = STORAGE_CHAT_ID();
-  const savedFiles: SavedFileEntry[] = [];
-  let failed = 0;
 
   // Look up the category's forum topic threadId so files land in the right topic in storage group.
-  const category = await getCategoryById(session.categoryId);
+  const category = await getCategoryById(categoryId);
   const storageThreadId = category?.threadId ?? null;
 
-  for (let i = 0; i < session.files.length; i++) {
-    // Telegram allows ~20 messages/min to the same group; pace sends to avoid flood wait.
-    if (i > 0) await new Promise<void>((r) => setTimeout(r, 200));
-    const file = session.files[i]!;
-    try {
+  // Paced + per-file error isolation: one flood-wait or failure doesn't abort the whole batch.
+  const { succeeded, failed } = await runPaced(
+    session.files,
+    async (file) => {
       // If the file was sent directly to the storage group, reuse the original message reference.
       // Otherwise copy it over so the DB always points to a stable message in the storage group.
       const alreadyInStorage = Number(file.originalChatId) === storageChatId;
@@ -799,25 +815,29 @@ async function saveAll(chatId: number, session: UploadSession) {
         storageMessageId: refMessageId,
         originalChatId: file.originalChatId,
         originalMessageId: file.originalMessageId,
-        categoryId: session.categoryId,
+        categoryId,
         tagIds: session.tagIds,
         caption: file.caption,
         eventDate: session.eventDate,
       });
-      if (id) {
-        await updateFileStorageRef(id, refChatId, refMessageId);
-        savedFiles.push({ id, fileName: file.fileName, isFavorite: false });
-      }
-    } catch (err) {
-      logger.error({ err }, "saveAll file error");
-      failed++;
-    }
-    // Update progress every 5 files to avoid Telegram rate limits on edits.
-    const done = savedFiles.length + failed;
-    if (done % 5 === 0 || done === total) {
-      await editMessageText(chatId, progressMsgId, progressBar(done, total));
-    }
-  }
+      if (!id) return null; // duplicate — nothing to save, not a failure
+      await updateFileStorageRef(id, refChatId, refMessageId);
+      const entry: SavedFileEntry = { id, fileName: file.fileName, isFavorite: false };
+      return entry;
+    },
+    {
+      onProgress: async (done) => {
+        // Update progress every 5 files to avoid Telegram rate limits on edits.
+        if (done % 5 === 0 || done === total) {
+          await editMessageText(chatId, progressMsgId, progressBar(done, total));
+        }
+      },
+    },
+  );
+
+  for (const f of failed) logger.error({ err: f.error }, "saveAll file error");
+  const savedFiles = succeeded.map((s) => s.result).filter((r): r is SavedFileEntry => r !== null);
+  const failedCount = failed.length;
 
   const tOpts = session.threadId ? { message_thread_id: session.threadId } : {};
   await editMessageText(chatId, progressMsgId, `✅ ${savedFiles.length} / ${total} file tersimpan.`);
@@ -832,9 +852,9 @@ async function saveAll(chatId: number, session: UploadSession) {
 
   await sendMessage(
     chatId,
-    failed === 0
+    failedCount === 0
       ? `✅ ${savedFiles.length} file berhasil disimpan!`
-      : `✅ ${savedFiles.length} berhasil, ❌ ${failed} gagal.`,
+      : `✅ ${savedFiles.length} berhasil, ❌ ${failedCount} gagal.`,
     tOpts,
   );
 
@@ -1326,11 +1346,15 @@ async function handleBrowseNav(chatId: number, data: string, cbThreadId: number 
 
   if (data === CB.BROWSE_DOWNLOAD_SELECTED && session.source !== "setfavorite") {
     const toSend = session.results.filter((f) => session.selectedIds.includes(f.id));
-    for (const file of toSend) {
-      await sendFileMessage(chatId, file.fileType, file.fileId, file.fileName, tOpts);
-    }
+    const { failed } = await runPaced(toSend, (file) =>
+      sendFileMessage(chatId, file.fileType, file.fileId, file.fileName, tOpts),
+    );
+    for (const f of failed) logger.error({ err: f.error }, "bulk download send error");
     session.selectedIds = [];
     await setBrowseSession(chatId, session);
+    if (failed.length > 0) {
+      await sendMessage(chatId, `⚠️ ${failed.length} / ${toSend.length} file gagal dikirim.`, tOpts);
+    }
     return;
   }
 

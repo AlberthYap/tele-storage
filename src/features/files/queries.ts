@@ -226,6 +226,46 @@ export async function getRecentFiles(userId: number, limit = 20): Promise<FileRo
   return db.select().from(files).where(eq(files.userId, userId)).orderBy(desc(files.createdAt)).limit(limit);
 }
 
+export async function getFavoriteFiles(userId: number): Promise<FileRow[]> {
+  return db
+    .select()
+    .from(files)
+    .where(and(eq(files.userId, userId), eq(files.isFavorite, true)))
+    .orderBy(desc(files.createdAt));
+}
+
+export async function getCategoryWithCount(
+  userId: number,
+): Promise<{ id: string; name: string; fileCount: number }[]> {
+  return db
+    .select({
+      id: categories.id,
+      name: categories.name,
+      fileCount: sql<number>`count(${files.id})::int`,
+    })
+    .from(categories)
+    .leftJoin(files, eq(files.categoryId, categories.id))
+    .where(eq(categories.userId, userId))
+    .groupBy(categories.id, categories.name)
+    .orderBy(categories.name);
+}
+
+export async function getTagWithCount(
+  userId: number,
+): Promise<{ id: string; name: string; fileCount: number }[]> {
+  return db
+    .select({
+      id: tags.id,
+      name: tags.name,
+      fileCount: sql<number>`count(${fileTags.fileId})::int`,
+    })
+    .from(tags)
+    .leftJoin(fileTags, eq(fileTags.tagId, tags.id))
+    .where(eq(tags.userId, userId))
+    .groupBy(tags.id, tags.name)
+    .orderBy(tags.name);
+}
+
 export async function getStats(userId: number): Promise<{
   totalFiles: number;
   totalCategories: number;

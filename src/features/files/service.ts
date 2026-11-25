@@ -18,6 +18,12 @@ import {
   getCategoryById,
   getCategoryByThreadId,
   getTagByName,
+  countFilesByCategory,
+  getRecentFiles,
+  getFavoriteFiles,
+  getCategoryWithCount,
+  getTagWithCount,
+  getStats,
 } from "./queries";
 import { copyMessage } from "../../lib/telegram";
 import type { ServiceResult, FileInfo, FileDetail } from "./types";
@@ -64,6 +70,20 @@ export async function listFiles(args: {
 }): Promise<{ items: FileInfo[] }> {
   const rows = await searchFiles(args);
   return { items: rows.map(toFileInfo) };
+}
+
+export async function listRecent(userId: number, limit = 20): Promise<{ items: FileInfo[] }> {
+  const rows = await getRecentFiles(userId, limit);
+  return { items: rows.map(toFileInfo) };
+}
+
+export async function listFavorites(userId: number): Promise<{ items: FileInfo[] }> {
+  const rows = await getFavoriteFiles(userId);
+  return { items: rows.map(toFileInfo) };
+}
+
+export async function getStatistics(userId: number) {
+  return getStats(userId);
 }
 
 export async function getFileDetail(id: string): Promise<ServiceResult<FileDetail>> {
@@ -122,8 +142,12 @@ export async function createCategory(
   name: string,
   threadId?: number,
 ): Promise<ServiceResult<{ id: string }>> {
-  const id = await insertCategory(userId, name.trim(), threadId);
-  return { ok: true, value: { id } };
+  try {
+    const id = await insertCategory(userId, name.trim(), threadId);
+    return { ok: true, value: { id } };
+  } catch {
+    return { ok: false, error: { code: "CONFLICT", message: "kategori sudah ada" } };
+  }
 }
 
 export async function getOrCreateTagByName(
@@ -151,15 +175,30 @@ export async function getOrCreateCategoryByThread(
 export async function updateCategory(id: string, name: string): Promise<ServiceResult<true>> {
   const row = await getCategoryById(id);
   if (!row) return { ok: false, error: { code: "NOT_FOUND", message: "category tidak ditemukan" } };
-  await renameCategory(id, name.trim());
-  return { ok: true, value: true };
+  try {
+    await renameCategory(id, name.trim());
+    return { ok: true, value: true };
+  } catch {
+    return { ok: false, error: { code: "CONFLICT", message: "nama kategori sudah dipakai" } };
+  }
 }
 
 export async function removeCategory(id: string): Promise<ServiceResult<true>> {
   const row = await getCategoryById(id);
   if (!row) return { ok: false, error: { code: "NOT_FOUND", message: "category tidak ditemukan" } };
+  const fileCount = await countFilesByCategory(id);
+  if (fileCount > 0) {
+    return {
+      ok: false,
+      error: { code: "CONFLICT", message: `kategori masih dipakai oleh ${fileCount} file` },
+    };
+  }
   await deleteCategory(id);
   return { ok: true, value: true };
+}
+
+export async function listCategoriesWithCount(userId: number) {
+  return getCategoryWithCount(userId);
 }
 
 // ─── Tags ─────────────────────────────────────────────────────────────────────
@@ -172,8 +211,16 @@ export async function createTag(
   userId: number,
   name: string,
 ): Promise<ServiceResult<{ id: string }>> {
-  const id = await insertTag(userId, name.trim().toLowerCase());
-  return { ok: true, value: { id } };
+  try {
+    const id = await insertTag(userId, name.trim().toLowerCase());
+    return { ok: true, value: { id } };
+  } catch {
+    return { ok: false, error: { code: "CONFLICT", message: "tag sudah ada" } };
+  }
+}
+
+export async function listTagsWithCount(userId: number) {
+  return getTagWithCount(userId);
 }
 
 export async function updateTag(
@@ -185,8 +232,12 @@ export async function updateTag(
   if (!rows.find((t) => t.id === id)) {
     return { ok: false, error: { code: "NOT_FOUND", message: "tag tidak ditemukan" } };
   }
-  await renameTag(id, name.trim().toLowerCase());
-  return { ok: true, value: true };
+  try {
+    await renameTag(id, name.trim().toLowerCase());
+    return { ok: true, value: true };
+  } catch {
+    return { ok: false, error: { code: "CONFLICT", message: "nama tag sudah dipakai" } };
+  }
 }
 
 export async function removeTag(id: string, userId: number): Promise<ServiceResult<true>> {

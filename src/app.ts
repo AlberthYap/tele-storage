@@ -7,6 +7,13 @@ const BOT_COMMANDS = [
   { command: "newcategory", description: "Buat kategori baru: /newcategory Nama Kategori" },
   { command: "search", description: "Cari file berdasarkan kata kunci, kategori, tag, atau tanggal" },
   { command: "setfavorite", description: "Cari & tandai file sebagai favorit" },
+  { command: "recent", description: "Lihat 20 upload terbaru" },
+  { command: "stats", description: "Lihat statistik penyimpanan" },
+  { command: "renamecategory", description: "Ubah nama kategori" },
+  { command: "deletecategory", description: "Hapus kategori" },
+  { command: "renametag", description: "Ubah nama tag" },
+  { command: "deletetag", description: "Hapus tag" },
+  { command: "cancel", description: "Batalkan sesi upload atau browse yang sedang aktif" },
 ];
 
 export const app = new Elysia()

@@ -48,6 +48,14 @@ export async function updateCategoryThreadId(id: string, threadId: number): Prom
   await db.update(categories).set({ threadId }).where(eq(categories.id, id));
 }
 
+export async function countFilesByCategory(categoryId: string): Promise<number> {
+  const rows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(files)
+    .where(eq(files.categoryId, categoryId));
+  return rows[0]?.count ?? 0;
+}
+
 export async function deleteCategory(id: string): Promise<void> {
   await db.delete(categories).where(eq(categories.id, id));
 }
@@ -78,6 +86,14 @@ export async function getTagByName(userId: number, name: string): Promise<TagRow
 
 export async function renameTag(id: string, name: string): Promise<void> {
   await db.update(tags).set({ name }).where(eq(tags.id, id));
+}
+
+export async function countFilesByTag(tagId: string): Promise<number> {
+  const rows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(fileTags)
+    .where(eq(fileTags.tagId, tagId));
+  return rows[0]?.count ?? 0;
 }
 
 export async function deleteTag(id: string): Promise<void> {
@@ -204,4 +220,45 @@ export async function toggleFavorite(id: string, isFavorite: boolean): Promise<v
 export async function deleteFile(id: string): Promise<number> {
   const rows = await db.delete(files).where(eq(files.id, id)).returning({ id: files.id });
   return rows.length;
+}
+
+export async function getRecentFiles(userId: number, limit = 20): Promise<FileRow[]> {
+  return db.select().from(files).where(eq(files.userId, userId)).orderBy(desc(files.createdAt)).limit(limit);
+}
+
+export async function getStats(userId: number): Promise<{
+  totalFiles: number;
+  totalCategories: number;
+  totalTags: number;
+  byFileType: { fileType: string; count: number }[];
+  last7Days: number;
+  last30Days: number;
+}> {
+  const now = new Date();
+  const d7 = new Date(now); d7.setDate(d7.getDate() - 7);
+  const d30 = new Date(now); d30.setDate(d30.getDate() - 30);
+
+  const [[totalFilesRow], [totalCatsRow], [totalTagsRow], byType, [last7Row], [last30Row]] =
+    await Promise.all([
+      db.select({ count: sql<number>`count(*)::int` }).from(files).where(eq(files.userId, userId)),
+      db.select({ count: sql<number>`count(*)::int` }).from(categories).where(eq(categories.userId, userId)),
+      db.select({ count: sql<number>`count(*)::int` }).from(tags).where(eq(tags.userId, userId)),
+      db.select({ fileType: files.fileType, count: sql<number>`count(*)::int` })
+        .from(files).where(eq(files.userId, userId)).groupBy(files.fileType),
+      db.select({ count: sql<number>`count(*)::int` }).from(files)
+        .where(and(eq(files.userId, userId), gte(files.createdAt, d7))),
+      db.select({ count: sql<number>`count(*)::int` }).from(files)
+        .where(and(eq(files.userId, userId), gte(files.createdAt, d30))),
+    ]);
+
+  return {
+    totalFiles: totalFilesRow?.count ?? 0,
+    totalCategories: totalCatsRow?.count ?? 0,
+    totalTags: totalTagsRow?.count ?? 0,
+    byFileType: [...byType]
+      .sort((a, b) => b.count - a.count)
+      .map((r) => ({ fileType: r.fileType ?? "lainnya", count: r.count })),
+    last7Days: last7Row?.count ?? 0,
+    last30Days: last30Row?.count ?? 0,
+  };
 }
